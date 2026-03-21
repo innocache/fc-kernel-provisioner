@@ -6,7 +6,7 @@
 
 **Architecture:** Separate-process model. Pool manager daemon boots jailed Firecracker VMs and exposes a Unix socket HTTP API. A Jupyter kernel provisioner plugin claims VMs from the pool and starts ipykernel inside them via vsock. ZMQ traffic flows over TAP networking. The Kernel Gateway connects to the kernel as if it were local.
 
-**Tech Stack:** Python 3.11+, asyncio, aiohttp, jupyter_client, ipykernel, Firecracker + jailer, AF_VSOCK, Alpine Linux rootfs
+**Tech Stack:** Python 3.11+, uv, asyncio, aiohttp, jupyter_client, ipykernel, Firecracker + jailer, AF_VSOCK, Alpine Linux rootfs
 
 **Spec:** `docs/superpowers/specs/2026-03-21-fc-kernel-provisioner-design.md`
 
@@ -18,6 +18,7 @@
 
 **Files:**
 - Create: `pyproject.toml`
+- Create: `.gitignore`
 - Create: `fc_provisioner/__init__.py`
 - Create: `fc_pool_manager/__init__.py`
 - Create: `tests/__init__.py`
@@ -40,7 +41,7 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -56,7 +57,19 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 ```
 
-- [ ] **Step 2: Create package init files**
+- [ ] **Step 2: Create .gitignore**
+
+```gitignore
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+```
+
+- [ ] **Step 3: Create package init files**
 
 `fc_provisioner/__init__.py`:
 ```python
@@ -73,16 +86,16 @@ __all__ = ["FirecrackerProvisioner"]
 ```python
 ```
 
-- [ ] **Step 3: Verify project installs**
+- [ ] **Step 4: Initialize uv and sync dependencies**
 
-Run: `pip install -e ".[dev]"`
-Expected: Installs successfully (provisioner import will fail until provisioner.py exists — that's fine)
+Run: `uv sync --group dev`
+Expected: Creates `.venv/`, installs all dependencies. (provisioner import will fail until provisioner.py exists — that's fine)
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add pyproject.toml fc_provisioner/__init__.py fc_pool_manager/__init__.py tests/__init__.py
-git commit -m "feat: scaffold project structure with pyproject.toml and entry points"
+git add .gitignore pyproject.toml uv.lock fc_provisioner/__init__.py fc_pool_manager/__init__.py tests/__init__.py
+git commit -m "feat: scaffold project structure with pyproject.toml and uv"
 ```
 
 ---
@@ -264,7 +277,7 @@ class TestHandleMessage:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `pytest tests/test_guest_agent.py -v`
+Run: `uv run pytest tests/test_guest_agent.py -v`
 Expected: FAIL — `fc_guest_agent.py` does not exist yet
 
 - [ ] **Step 3: Implement the guest agent**
@@ -430,7 +443,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_guest_agent.py -v`
+Run: `uv run pytest tests/test_guest_agent.py -v`
 Expected: All 6 tests PASS
 
 - [ ] **Step 5: Commit**
@@ -750,7 +763,7 @@ jailer:
 
 - [ ] **Step 3: Run tests to verify they fail**
 
-Run: `pytest tests/test_config.py -v`
+Run: `uv run pytest tests/test_config.py -v`
 Expected: FAIL — `fc_pool_manager.config` does not exist
 
 - [ ] **Step 4: Implement config loader**
@@ -823,7 +836,7 @@ class PoolConfig:
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `pytest tests/test_config.py -v`
+Run: `uv run pytest tests/test_config.py -v`
 Expected: All 2 tests PASS
 
 - [ ] **Step 6: Commit**
@@ -912,7 +925,7 @@ class TestNetworkManager:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `pytest tests/test_network.py -v`
+Run: `uv run pytest tests/test_network.py -v`
 Expected: FAIL — module does not exist
 
 - [ ] **Step 3: Implement network manager**
@@ -1016,7 +1029,7 @@ class NetworkManager:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_network.py -v`
+Run: `uv run pytest tests/test_network.py -v`
 Expected: All 8 tests PASS
 
 - [ ] **Step 5: Commit**
@@ -1121,7 +1134,7 @@ class TestVMInstance:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `pytest tests/test_vm.py -v`
+Run: `uv run pytest tests/test_vm.py -v`
 Expected: FAIL — module does not exist
 
 - [ ] **Step 3: Implement VMInstance and CIDAllocator**
@@ -1203,7 +1216,7 @@ class VMInstance:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_vm.py -v`
+Run: `uv run pytest tests/test_vm.py -v`
 Expected: All 7 tests PASS
 
 - [ ] **Step 5: Commit**
@@ -1339,7 +1352,7 @@ class TestFirecrackerAPI:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `pytest tests/test_firecracker_api.py -v`
+Run: `uv run pytest tests/test_firecracker_api.py -v`
 Expected: FAIL — module does not exist
 
 - [ ] **Step 3: Implement Firecracker API client**
@@ -1424,7 +1437,7 @@ class FirecrackerAPI:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_firecracker_api.py -v`
+Run: `uv run pytest tests/test_firecracker_api.py -v`
 Expected: All 5 tests PASS
 
 - [ ] **Step 5: Commit**
@@ -1551,7 +1564,7 @@ class TestPoolManagerAcquireRelease:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `pytest tests/test_pool_manager.py -v`
+Run: `uv run pytest tests/test_pool_manager.py -v`
 Expected: FAIL — module does not exist
 
 - [ ] **Step 3: Implement pool manager**
@@ -1820,7 +1833,7 @@ class PoolManager:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_pool_manager.py -v`
+Run: `uv run pytest tests/test_pool_manager.py -v`
 Expected: All 5 tests PASS
 
 - [ ] **Step 5: Commit**
@@ -1919,7 +1932,7 @@ class TestPoolManagerServer:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `pytest tests/test_server.py -v`
+Run: `uv run pytest tests/test_server.py -v`
 Expected: FAIL — module does not exist
 
 - [ ] **Step 3: Implement the HTTP server**
@@ -2060,7 +2073,7 @@ main()
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_server.py -v`
+Run: `uv run pytest tests/test_server.py -v`
 Expected: All 6 tests PASS
 
 - [ ] **Step 5: Commit**
@@ -2119,7 +2132,7 @@ class TestMessageFraming:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `pytest tests/test_vsock_client.py -v`
+Run: `uv run pytest tests/test_vsock_client.py -v`
 Expected: FAIL — module does not exist
 
 - [ ] **Step 3: Implement vsock client**
@@ -2213,7 +2226,7 @@ async def vsock_send_only(
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_vsock_client.py -v`
+Run: `uv run pytest tests/test_vsock_client.py -v`
 Expected: All 4 tests PASS
 
 - [ ] **Step 5: Commit**
@@ -2255,7 +2268,7 @@ class TestPoolClient:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `pytest tests/test_pool_client.py -v`
+Run: `uv run pytest tests/test_pool_client.py -v`
 Expected: FAIL — module does not exist
 
 - [ ] **Step 3: Implement pool client**
@@ -2315,7 +2328,7 @@ class PoolClient:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_pool_client.py -v`
+Run: `uv run pytest tests/test_pool_client.py -v`
 Expected: All 2 tests PASS
 
 - [ ] **Step 5: Commit**
@@ -2488,7 +2501,7 @@ class TestFirecrackerProvisioner:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `pytest tests/test_provisioner.py -v`
+Run: `uv run pytest tests/test_provisioner.py -v`
 Expected: FAIL — `provisioner.py` does not exist
 
 - [ ] **Step 3: Implement the provisioner**
@@ -2669,7 +2682,7 @@ class FirecrackerProvisioner(KernelProvisionerBase):
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_provisioner.py -v`
+Run: `uv run pytest tests/test_provisioner.py -v`
 Expected: All 7 tests PASS
 
 - [ ] **Step 5: Commit**
@@ -2704,8 +2717,8 @@ Prerequisites:
   4. Pool manager running: python -m fc_pool_manager.server --config config/fc-pool.yaml
   5. Kernel Gateway running: jupyter kernelgateway --default_kernel_name=python3-firecracker
 
-Run: pytest tests/test_integration.py -v -m integration
-Skip: pytest tests/ -v -m "not integration"
+Run: uv run pytest tests/test_integration.py -v -m integration
+Skip: uv run pytest tests/ -v -m "not integration"
 """
 
 import asyncio
@@ -2840,7 +2853,7 @@ markers = [
 
 - [ ] **Step 3: Verify unit tests still pass**
 
-Run: `pytest tests/ -v -m "not integration"`
+Run: `uv run pytest tests/ -v -m "not integration"`
 Expected: All unit tests PASS, integration tests skipped
 
 - [ ] **Step 4: Commit**
@@ -2856,17 +2869,17 @@ git commit -m "feat: add integration smoke test for full Firecracker pipeline"
 
 - [ ] **Step 1: Run full unit test suite**
 
-Run: `pytest tests/ -v -m "not integration"`
+Run: `uv run pytest tests/ -v -m "not integration"`
 Expected: All tests PASS
 
-- [ ] **Step 2: Verify package installs**
+- [ ] **Step 2: Verify package syncs**
 
-Run: `pip install -e ".[dev]"`
+Run: `uv sync --group dev`
 Expected: No errors
 
 - [ ] **Step 3: Verify entry point**
 
-Run: `python -c "from fc_provisioner import FirecrackerProvisioner; print(FirecrackerProvisioner)"`
+Run: `uv run python -c "from fc_provisioner import FirecrackerProvisioner; print(FirecrackerProvisioner)"`
 Expected: `<class 'fc_provisioner.provisioner.FirecrackerProvisioner'>`
 
 - [ ] **Step 4: Final commit if needed**
