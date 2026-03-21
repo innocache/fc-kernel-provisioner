@@ -65,6 +65,8 @@ Minimal Alpine 3.19 ext4 (512 MB), built by `guest/build_rootfs.sh`:
 | Guest agent | `/usr/local/bin/fc-guest-agent` | VM control |
 | Init | `/init` shell script | Boot sequence |
 
+**Note**: The rootfs does NOT include `dhcpcd` — static IP via kernel boot args eliminates the need for DHCP. This saves ~2 MB and removes a boot-time delay.
+
 ### Init Script (`/init`)
 
 Runs as PID 1:
@@ -73,7 +75,13 @@ Runs as PID 1:
 2. Bring up `lo` and `eth0` (static IP via kernel boot args — no DHCP)
 3. `exec` the guest agent
 
-Static IP is set via kernel boot args: `ip=172.16.0.X::172.16.0.1:255.255.255.0::eth0:off`. This eliminates DHCP dependency and saves ~2s boot time. The pool manager controls IP assignment and passes it in `boot_args`.
+Static IP is set via kernel boot args. The pool manager templates the IP into the boot args string:
+
+```
+console=ttyS0 reboot=k panic=1 pci=off ip={vm_ip}::172.16.0.1:255.255.255.0::eth0:off init=/init
+```
+
+This eliminates DHCP dependency and saves ~2s boot time. The pool manager controls IP assignment and passes the templated `boot_args` to Firecracker's `PUT /boot-source` API call.
 
 ### Guest Agent (`fc_guest_agent.py`)
 
@@ -121,10 +129,10 @@ Firecracker's pre-built minimal kernel (5.10.x), downloaded once and shared read
 
 ### Per-VM TAP (managed by pool manager)
 
-- Create TAP device `tap-{vm_id_short}` (name truncated to 15 chars for `IFNAMSIZ`)
+- Create TAP device named `tap-{uuid_hex[:8]}` (e.g., `tap-a1b2c3d4`, 13 chars — well within the 15-char `IFNAMSIZ` limit). Uses the raw UUID hex, NOT the `vm-` prefixed ID.
 - Attach to `fcbr0`, bring up
 - No IP on the TAP — VM gets its IP via kernel boot args, host routes through bridge
-- On teardown: `ip link del tap-{vm_id_short}` (auto-detaches from bridge)
+- On teardown: `ip link del tap-{name}` (auto-detaches from bridge)
 
 ### IP Address Management
 
@@ -165,22 +173,35 @@ BOOTING ──→ IDLE ──→ ASSIGNED ──→ STOPPING ──→ [destroye
 
 2. **VM boot sequence** — For each new VM:
    - Allocate IP from free list, generate VM ID (`vm-{uuid_hex[:8]}`)
+   - Allocate unique CID for vsock (incrementing counter starting at 3, recycled on release)
+   - Generate deterministic MAC address from IP: `AA:FC:00:00:00:{ip_last_octet_hex}` (e.g., IP `.2` → `AA:FC:00:00:00:02`)
    - Create CoW rootfs overlay (`cp --reflink=auto base.ext4 → overlay.ext4`)
-   - Create TAP device, attach to bridge
-   - Set up jailed directory structure (hard-link kernel, rootfs)
-   - Invoke `jailer` binary with chroot base, exec path, UID/GID, VM ID
-   - Configure via Firecracker REST API on jailed Unix socket: machine config, boot source (static IP in boot args), rootfs drive, network interface, vsock
-   - `PUT /actions` → `InstanceStart`
+   - Create TAP device (name: `tap-{uuid_hex[:8]}`, max 15 chars), attach to bridge
+   - Set up jailed directory structure (hard-link kernel, copy overlay into jail)
+   - Invoke `jailer` binary: `jailer --id {vm_id} --exec-file {firecracker_path} --uid {uid} --gid {gid} --chroot-base-dir {chroot_base}`
+   - Configure via Firecracker REST API on jailed Unix socket (`{chroot_base}/firecracker/{vm_id}/root/run/firecracker.socket`):
+     - `PUT /machine-config` → `{vcpu_count, mem_size_mib}`
+     - `PUT /boot-source` → `{kernel_image_path: "vmlinux", boot_args: "console=ttyS0 reboot=k panic=1 pci=off ip={vm_ip}::172.16.0.1:255.255.255.0::eth0:off init=/init"}`
+     - `PUT /drives/rootfs` → `{drive_id: "rootfs", path_on_host: "overlay.ext4", is_root_device: true, is_read_only: false}`
+     - `PUT /network-interfaces/eth0` → `{iface_id: "eth0", host_dev_name: "tap-{id}", guest_mac: "{mac}"}`
+     - `PUT /vsock` → `{guest_cid: {cid}, uds_path: "v.sock"}`
+   - `PUT /actions` → `{action_type: "InstanceStart"}`
    - Wait for guest agent ping over vsock (timeout 30s) → transition to `IDLE`
+
+   **Note on paths**: After jailing, Firecracker runs inside a chroot. Paths in the API calls (`vmlinux`, `overlay.ext4`, `v.sock`) are relative to the chroot root, not absolute host paths. The host-side vsock UDS path is `{chroot_base}/firecracker/{vm_id}/root/v.sock`.
 
 3. **Jailer integration** — Each VM gets a jailed directory:
    ```
-   /srv/jailer/firecracker/{vm_id}/root/
-   ├── overlay.ext4      (CoW rootfs)
+   {chroot_base}/firecracker/{vm_id}/root/
+   ├── overlay.ext4      (CoW rootfs, copied into jail)
    ├── vmlinux           (hard-linked from shared kernel)
-   └── run/              (API socket, vsock UDS)
+   ├── run/              (created by jailer)
+   │   └── firecracker.socket  (Firecracker API socket, created by jailer)
+   └── v.sock            (vsock UDS, created by Firecracker after vsock config)
    ```
-   Jailer creates cgroup, user/pid/mount namespaces, seccomp filter.
+   Default `chroot_base`: `/srv/jailer`. Jailer creates cgroup, user/pid/mount namespaces, seccomp filter.
+
+   **CID assignment**: Each VM needs a unique vsock CID. CID 0, 1, 2 are reserved. Pool manager allocates CIDs starting at 3, incrementing per VM, recycled on VM teardown. Since each VM has its own vsock UDS path, the CID only needs to be unique among concurrently running VMs.
 
 4. **VM teardown** — On release with `destroy=true`:
    - Kill jailer process (cascades to Firecracker VMM)
@@ -198,15 +219,51 @@ BOOTING ──→ IDLE ──→ ASSIGNED ──→ STOPPING ──→ [destroye
 |----------|--------|---------|----------|
 | `/api/vms/acquire` | POST | `{vcpu, mem_mib}` | `{id, ip, vsock_path}` |
 | `/api/vms/{id}/release` | POST | `{destroy: bool}` | `{ok: true}` |
-| `/api/vms/{id}/health` | GET | — | `{alive, uptime}` |
+| `/api/vms/{id}/health` | GET | — | `{alive: bool, uptime: int, kernel_alive: bool}` |
 | `/api/pool/status` | GET | — | `{idle, assigned, booting, max}` |
+
+**`acquire` resource matching**: In the core slice, all pre-warmed VMs share a single profile from `vm_defaults` in `fc-pool.yaml`. The `vcpu` and `mem_mib` fields in the acquire request are validated against the pool's configured defaults — if they don't match, the request fails with HTTP 400 and `{"error": "requested resources do not match pool profile", "available": {vcpu: 1, mem_mib: 512}}`. Multi-profile pools (VMs with different resource sizes) are a future enhancement.
+
+**Pool exhaustion**: When no idle VMs are available and `max_vms` is reached, `acquire` returns HTTP 503 with `{"error": "pool_exhausted", "retry_after_ms": 5000}`. The provisioner raises `RuntimeError("No VMs available")` which surfaces as a kernel start failure to the Gateway.
+
+**Health check translation**: The `/api/vms/{id}/health` endpoint pings the guest agent over vsock (`{"action": "ping"}`) and translates the response. The guest agent returns `{status: "alive", uptime: N, kernel_alive: bool, mem_free_mib: N}`. The pool manager maps `status == "alive"` to `alive: true` in its API response. If the vsock ping times out (5s), returns `{alive: false}`.
+
+**Prometheus metrics**: Deferred from core slice. The API will include a `GET /api/metrics` endpoint returning Prometheus exposition format, added in a follow-on phase.
 
 ### Internal Abstractions
 
 - **`VMInstance`** — Per-VM state: id, ip, tap name, jail path, vsock path, state, jailer process handle
 - **`FirecrackerAPI`** — Async REST client for the per-VM jailed Unix socket
 - **`NetworkManager`** — TAP creation/teardown, IP allocation. IP allocator behind an `IPAllocator` interface.
-- **`Config`** — YAML loader for `fc-pool.yaml`
+- **`Config`** — YAML loader for `fc-pool.yaml`. Full schema:
+
+```yaml
+pool:
+  size: 5                         # pre-warmed idle VMs
+  max_vms: 30                     # hard ceiling
+  replenish_threshold: 2          # boot new VMs when idle < this
+  health_check_interval: 30       # seconds between health pings
+
+vm_defaults:
+  vcpu: 1
+  mem_mib: 512
+  kernel: /opt/firecracker/vmlinux
+  rootfs: /opt/firecracker/rootfs.ext4
+  boot_args_template: "console=ttyS0 reboot=k panic=1 pci=off ip={vm_ip}::172.16.0.1:255.255.255.0::eth0:off init=/init"
+
+network:
+  bridge: fcbr0
+  subnet: "172.16.0.0/24"
+  gateway: "172.16.0.1"
+  vm_ip_start: 2                  # first VM gets .2
+
+jailer:
+  enabled: true
+  chroot_base: /srv/jailer
+  exec_path: /usr/bin/firecracker
+  uid: 123
+  gid: 100
+```
 
 ---
 
@@ -241,13 +298,15 @@ Activated by kernelspec at `/usr/share/jupyter/kernels/python3-firecracker/kerne
 }
 ```
 
+**Design change from original spec**: `rootfs_path` and `kernel_path` are NOT in the kernelspec config. The pool manager owns rootfs/kernel paths (configured in `fc-pool.yaml`), not the provisioner. The provisioner only needs the pool socket path and resource requirements to pass to `acquire()`.
+
 ### Class: `FirecrackerProvisioner(KernelProvisionerBase)`
 
 Implements the Jupyter kernel provisioner interface:
 
 1. **`pre_launch(**kwargs)`** — Read config from kernelspec metadata. Create `PoolClient`. Call `acquire()` to claim an idle VM (`{id, ip, vsock_path}`). Clear `cmd` (no `Popen`).
 
-2. **`launch_process(cmd, **kwargs)`** — Send `start_kernel` to guest agent over vsock with ZMQ ports (5555–5559) and HMAC key from `connection_info`. Wait for `{"status": "ready"}` (timeout 30s). Override `connection_info` to point at VM's TAP IP and fixed ports. Return `FirecrackerProcess` handle.
+2. **`launch_process(cmd, **kwargs)`** — Call `vsock_request()` to send `start_kernel` to guest agent over vsock with ZMQ ports (5555–5559) and HMAC key from `connection_info`, and read the response on the same connection (timeout 30s). Assert `{"status": "ready"}`. Override `connection_info` to point at VM's TAP IP and fixed ports. Return `FirecrackerProcess` handle.
 
 3. **`poll()`** — Delegate to `FirecrackerProcess.poll()`, which calls `pool_client.is_alive(vm_id)`. Returns `None` if alive, exit code if dead.
 
@@ -263,7 +322,7 @@ Implements the Jupyter kernel provisioner interface:
 
 - **`PoolClient`** — Async HTTP client using `aiohttp.UnixConnector`. Methods: `acquire()`, `release()`, `is_alive()`.
 
-- **`vsock_client`** — `vsock_send(path, msg)` and `vsock_recv(path, timeout)`. Handle Firecracker vsock UDS handshake (`CONNECT <port>\n` → `OK <port>\n`), then send/receive length-prefixed JSON. Connection opened and closed per call in the core slice.
+- **`vsock_client`** — Provides `vsock_request(path, msg, timeout) → response` as the primary function. Opens a single connection, performs the Firecracker vsock UDS handshake (`CONNECT <port>\n` → `OK <port>\n`), sends length-prefixed JSON request, reads length-prefixed JSON response, then closes the connection. The guest agent is single-threaded and responds on the same connection, so send and receive MUST happen on the same connection. Also provides `vsock_send_only(path, msg)` for fire-and-forget commands (e.g., `signal`) where no response is needed.
 
 ### Key Design Point
 
@@ -358,7 +417,7 @@ fc-kernel-provisioner/
 │   ├── init.sh                      # /init script
 │   └── build_rootfs.sh              # Rootfs build script
 │
-├── sandbox_client/                  # Chatbot client (deferred)
+├── sandbox_client/                  # Chatbot client (ALL deferred from core slice)
 │   ├── __init__.py
 │   ├── client.py                    # SandboxSession class
 │   ├── output.py                    # Output capture
