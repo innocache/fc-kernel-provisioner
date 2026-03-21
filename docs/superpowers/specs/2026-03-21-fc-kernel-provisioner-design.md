@@ -208,6 +208,7 @@ BOOTING ──→ IDLE ──→ ASSIGNED ──→ STOPPING ──→ [destroye
    - Delete TAP device
    - Remove jailed directory
    - Return IP to free list
+   - Return CID to free pool
 
 5. **Health checking** — Background task every 30s: ping each `IDLE` VM over vsock, replace unresponsive ones.
 
