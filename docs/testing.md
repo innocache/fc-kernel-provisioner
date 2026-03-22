@@ -45,21 +45,22 @@ Run anywhere — macOS, Linux, CI. Tests use mocks for all system interactions.
 uv run pytest tests/ -v -m "not integration"
 ```
 
-**What's covered:**
-- Guest agent message handling (vsock protocol, start/restart/signal/ping)
-- Config YAML loading and validation
-- IP allocator (allocate, release, exhaustion)
-- Network manager (TAP naming, MAC generation)
-- VM state machine (valid/invalid transitions)
-- CID allocator (allocation, recycling)
-- Firecracker API request body construction
-- Pool manager acquire/release logic (mocked VMs)
-- HTTP server endpoints (mocked pool manager)
-- Vsock client message framing
-- Pool client construction
-- Provisioner lifecycle (pre_launch, launch_process, cleanup)
+**144 tests across 17 test files.** Expected to pass in < 5 seconds.
 
-**Expected:** All pass in < 5 seconds.
+**What's covered:**
+
+| Module | Test files | Coverage |
+|--------|-----------|----------|
+| Guest agent | `test_guest_agent.py`, `test_guest_agent_edge_cases.py` | Message handling, vsock protocol, start/restart/signal/ping, malformed input, oversized messages, kernel crash on launch, missing ports/key |
+| Config | `test_config.py`, `test_config_edge_cases.py` | YAML loading, validation, missing sections, empty/invalid YAML, frozen dataclass, extra fields |
+| Network | `test_network.py`, `test_network_edge_cases.py` | IP allocation/release/exhaustion, TAP naming, MAC generation, double release, full subnet |
+| VM state machine | `test_vm.py`, `test_vm_edge_cases.py` | All 16 state transitions (4×4 matrix), CID allocation/recycling, MAX_CID boundary, lifecycle paths |
+| Pool manager | `test_pool_manager.py`, `test_pool_manager_edge_cases.py` | Acquire/release logic, concurrent acquire serialization, pool status, health check, shutdown, replenish, resource mismatch, STOPPING state handling |
+| HTTP server | `test_server.py`, `test_server_edge_cases.py` | All API endpoints, error codes, pool exhaustion 503, malformed body handling |
+| Firecracker API | `test_firecracker_api.py` | Request body construction |
+| Vsock client | `test_vsock_client.py`, `test_vsock_client_edge_cases.py` | Message framing, encode/decode roundtrip, unicode, large payloads, truncated messages |
+| Pool client | `test_pool_client.py` | HTTP client construction |
+| Provisioner | `test_provisioner.py`, `test_provisioner_edge_cases.py` | Lifecycle (pre_launch, launch, cleanup), restart state reset, connection info roundtrip, signal forwarding |
 
 ### Level 2: Smoke Test (manual, requires running services)
 
@@ -142,6 +143,32 @@ uv run jupyter kernelgateway \
 ./scripts/run-tests.sh integration
 ```
 
+### Cleanup / Teardown
+
+All setup scripts support full reversal:
+
+```bash
+# Remove network bridge, iptables/ebtables rules (volatile — also lost on reboot)
+sudo ./config/setup_network.sh teardown
+
+# Remove rootfs image
+sudo ./guest/build_rootfs.sh --clean
+
+# Remove Firecracker binaries, kernel, jailer dirs, user, sysctl/limits configs
+sudo ./scripts/setup-host.sh teardown
+
+# Check what's currently installed
+sudo ./scripts/setup-host.sh status
+```
+
+**Host impact summary:**
+
+| Script | What it modifies | Teardown? | Notes |
+|--------|-----------------|-----------|-------|
+| `build_rootfs.sh` | Only the output ext4 file | `--clean` | All work in temp dirs + chroot. Zero host pollution. |
+| `setup-host.sh` | Binaries, dirs, user, sysctl, limits | `teardown` | Apt packages intentionally kept (shared utilities). |
+| `setup_network.sh` | Bridge, iptables, ebtables | `teardown` | All volatile — lost on reboot anyway. |
+
 ### Detailed: `setup-host.sh`
 
 The script at `scripts/setup-host.sh` automates:
@@ -176,6 +203,19 @@ Must be re-run after each host reboot. The systemd service (`config/fc-pool-mana
 - Init script at `/init`
 
 Takes ~5 minutes. Only needs to be rebuilt when guest packages change.
+
+---
+
+## Pool Manager API
+
+The pool manager exposes a Unix socket HTTP API:
+
+| Endpoint | Method | Request | Response |
+|----------|--------|---------|----------|
+| `/api/vms/acquire` | POST | `{"vcpu": 1, "mem_mib": 512}` | `{"id": "vm-...", "ip": "172.16.0.x", "vsock_path": "..."}` |
+| `/api/vms/{vm_id}` | DELETE | `{"destroy": true}` (optional body) | `{"ok": true}` |
+| `/api/vms/{vm_id}/health` | GET | — | `{"alive": true, "uptime": 123.4, "kernel_alive": true}` |
+| `/api/pool/status` | GET | — | `{"idle": 3, "assigned": 1, "booting": 0, "max": 30}` |
 
 ---
 
