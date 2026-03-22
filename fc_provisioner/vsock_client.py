@@ -10,8 +10,11 @@ connection. vsock_request() sends AND receives on a single connection.
 
 import asyncio
 import json
+import logging
 import struct
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 GUEST_AGENT_PORT = 52
 HEADER_FMT = "!I"
@@ -77,7 +80,7 @@ async def vsock_send_only(
         writer.write(_encode_message(msg))
         await writer.drain()
     except Exception:
-        pass
+        logger.warning("Failed to send vsock message to %s: %s", vsock_uds_path, msg, exc_info=True)
     finally:
         writer.close()
         await writer.wait_closed()
