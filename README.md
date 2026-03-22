@@ -39,6 +39,7 @@ fc-kernel-provisioner/
 │
 ├── config/
 │   ├── fc-pool-manager.service    # systemd unit (pool manager)
+│   ├── fc-kernel-gateway.service  # systemd unit (Kernel Gateway)
 │   ├── fc-pool.yaml               # Pool manager configuration
 │   ├── kernelspec/
 │   │   └── kernel.json            # Jupyter kernelspec
@@ -46,7 +47,9 @@ fc-kernel-provisioner/
 │
 ├── scripts/
 │   ├── setup-host.sh        # Host setup (with teardown + status modes)
-│   └── run-tests.sh         # Test runner (unit/smoke/integration)
+│   ├── run-tests.sh         # Test runner (unit/smoke/integration)
+│   ├── remote-test.sh       # Remote integration test runner
+│   └── deploy.sh            # Production deployment manager
 │
 └── tests/                   # 207 unit tests, no KVM required
 ```
@@ -153,6 +156,18 @@ uv run pytest tests/ -v -m "not integration"
 # Integration tests (full pipeline)
 ./scripts/run-tests.sh integration
 ```
+
+### Remote Testing & Deployment
+
+```bash
+# Run full test suite on a remote KVM host
+./scripts/remote-test.sh user@host
+
+# Deploy as systemd services
+./scripts/deploy.sh user@host deploy
+```
+
+See [docs/testing.md](docs/testing.md) for full details.
 
 ## Host Cleanup
 
