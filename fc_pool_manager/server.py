@@ -49,9 +49,7 @@ async def handle_acquire(request: web.Request) -> web.Response:
 async def handle_release(request: web.Request) -> web.Response:
     manager: PoolManager = request.app["manager"]
     vm_id = request.match_info["vm_id"]
-    body = await request.json()
-    destroy = body.get("destroy", True)
-    await manager.release(vm_id, destroy=destroy)
+    await manager.release(vm_id)
     return web.json_response({"ok": True})
 
 

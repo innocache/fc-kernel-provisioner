@@ -1,5 +1,6 @@
 """Tests for pool manager core logic (mocked, no real VMs)."""
 
+import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from fc_pool_manager.manager import PoolManager
@@ -89,9 +90,35 @@ class TestPoolManagerAcquireRelease:
         vm.transition_to(VMState.ASSIGNED)
         manager._vms["vm-test1234"] = vm
 
-        await manager.release("vm-test1234", destroy=True)
+        await manager.release("vm-test1234")
         assert "vm-test1234" not in manager._vms
         manager._destroy_vm.assert_awaited_once()
+
+    async def test_concurrent_acquire_no_double_assign(self, manager):
+        """Two concurrent acquire calls must not assign the same VM twice."""
+        vm = make_idle_vm()
+        manager._vms["vm-test1234"] = vm
+        # Fill pool to max so the second acquire can't boot on demand
+        for i in range(1, manager._config.max_vms):
+            other = make_idle_vm(
+                vm_id=f"vm-{i:08x}", ip=f"172.16.0.{i+2}", cid=i + 3
+            )
+            other.transition_to(VMState.ASSIGNED)
+            manager._vms[other.vm_id] = other
+
+        results = await asyncio.gather(
+            manager.acquire(vcpu=1, mem_mib=512),
+            manager.acquire(vcpu=1, mem_mib=512),
+            return_exceptions=True,
+        )
+
+        successes = [r for r in results if isinstance(r, dict)]
+        errors = [r for r in results if isinstance(r, RuntimeError)]
+        assert len(successes) == 1
+        assert successes[0]["id"] == "vm-test1234"
+        assert len(errors) == 1
+        assert "pool_exhausted" in str(errors[0])
+        assert manager._vms["vm-test1234"].state == VMState.ASSIGNED
 
     async def test_idle_count(self, manager):
         for i in range(3):
