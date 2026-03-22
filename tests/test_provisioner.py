@@ -2,8 +2,10 @@
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from jupyter_client.kernelspec import KernelSpec
-from fc_provisioner.provisioner import FirecrackerProvisioner, FirecrackerProcess
+
+jupyter_client = pytest.importorskip("jupyter_client")
+from jupyter_client.kernelspec import KernelSpec  # noqa: E402
+from fc_provisioner.provisioner import FirecrackerProvisioner, FirecrackerProcess  # noqa: E402
 
 
 class TestFirecrackerProcess:
