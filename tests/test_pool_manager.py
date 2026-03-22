@@ -160,9 +160,13 @@ class TestPoolManagerReplenishThreshold:
         result = await manager.acquire(vcpu=1, mem_mib=512)
         assert result["id"] == "vm-test1234"
 
-        # Yield to the event loop so the background replenish task can execute
+        # Poll until background replenish task restores idle pool to pool_size=2
         import asyncio as _asyncio
-        await _asyncio.sleep(0)
+        expected_idle = 2
+        loop = _asyncio.get_event_loop()
+        deadline = loop.time() + 1.0
+        while manager.idle_count < expected_idle and loop.time() < deadline:
+            await _asyncio.sleep(0.01)
 
-        # idle is now 0 < threshold=1, so replenish fired and booted up to pool_size=2
-        assert manager._boot_vm.await_count >= 1
+        assert manager.idle_count == expected_idle
+        assert manager._boot_vm.await_count == expected_idle
