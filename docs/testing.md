@@ -127,7 +127,7 @@ sudo uv run python -m fc_pool_manager.server \
     --socket /var/run/fc-pool.sock -v
 
 # 7. Install kernelspec
-uv run jupyter kernelspec install config/ \
+uv run jupyter kernelspec install config/kernelspec/ \
     --name python3-firecracker \
     --user
 

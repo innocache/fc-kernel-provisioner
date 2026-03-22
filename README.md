@@ -38,10 +38,11 @@ fc-kernel-provisioner/
 │   └── build_rootfs.sh      # Builds Alpine rootfs with Python + data science libs
 │
 ├── config/
-│   ├── kernel.json          # Jupyter kernelspec
-│   ├── fc-pool.yaml         # Pool manager configuration
-│   ├── setup_network.sh     # Host bridge + NAT setup (with teardown mode)
-│   └── fc-pool-manager.service  # systemd unit
+│   ├── fc-pool-manager.service    # systemd unit (pool manager)
+│   ├── fc-pool.yaml               # Pool manager configuration
+│   ├── kernelspec/
+│   │   └── kernel.json            # Jupyter kernelspec
+│   └── setup_network.sh           # Host bridge + NAT setup (with teardown mode)
 │
 ├── scripts/
 │   ├── setup-host.sh        # Host setup (with teardown + status modes)
@@ -89,7 +90,7 @@ sudo uv run python -m fc_pool_manager.server \
     --socket /var/run/fc-pool.sock -v
 
 # 5. Install kernelspec + start Kernel Gateway
-uv run jupyter kernelspec install config/ --name python3-firecracker --user
+uv run jupyter kernelspec install config/kernelspec/ --name python3-firecracker --user
 uv run jupyter kernelgateway \
     --KernelGatewayApp.default_kernel_name=python3-firecracker \
     --KernelGatewayApp.port=8888
