@@ -232,7 +232,9 @@ class PoolManager:
             await asyncio.to_thread(shutil.rmtree, vm.jail_path, ignore_errors=True)
 
     async def replenish(self) -> None:
-        """Boot VMs until idle count meets pool_size."""
+        """Boot VMs up to pool_size when idle count drops below replenish_threshold."""
+        if self.idle_count >= self._config.replenish_threshold:
+            return
         async with self._boot_lock:
             while (
                 self.idle_count < self._config.pool_size
