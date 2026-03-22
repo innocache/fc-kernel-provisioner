@@ -211,7 +211,7 @@ ssh -f "$HOST" "cd $REMOTE_DIR && nohup sudo uv run python -m fc_pool_manager.se
 
 # Start Kernel Gateway in background
 step "Starting Kernel Gateway..."
-ssh -f "$HOST" "cd $REMOTE_DIR && nohup uv run jupyter kernelgateway --KernelGatewayApp.default_kernel_name=python3-firecracker --KernelGatewayApp.port=8888 </dev/null >/tmp/fc-kernel-gateway.log 2>&1"
+ssh -f "$HOST" "cd $REMOTE_DIR && nohup uv run jupyter kernelgateway --KernelGatewayApp.default_kernel_name=python3-firecracker --KernelGatewayApp.port=8888 --KernelGatewayApp.auth_token='' </dev/null >/tmp/fc-kernel-gateway.log 2>&1"
 
 # Poll until services are ready (timeout 120s)
 step "Waiting for services to be ready (timeout 120s)..."
