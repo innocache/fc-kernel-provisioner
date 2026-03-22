@@ -201,9 +201,9 @@ if [[ "$UNIT_ONLY" == "true" ]]; then
     exit 0  # Triggers trap → teardown → exit $TEST_RC
 fi
 
-# Install kernelspec
+# Install kernelspec (no sudo — installs into user-owned venv with --sys-prefix)
 step "Installing kernelspec..."
-ssh "$HOST" "cd $REMOTE_DIR && sudo uv run jupyter kernelspec install config/kernelspec/ --name python3-firecracker --sys-prefix"
+ssh "$HOST" "cd $REMOTE_DIR && uv run jupyter kernelspec install config/kernelspec/ --name python3-firecracker --sys-prefix"
 
 # Start pool manager in background (ssh -f + nohup to fully detach from SSH session)
 step "Starting pool manager..."
