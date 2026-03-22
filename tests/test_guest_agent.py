@@ -1,0 +1,173 @@
+"""Tests for the fc_guest_agent standalone script."""
+import importlib.util
+import json
+import os
+import struct
+import sys
+import time
+from unittest.mock import MagicMock, patch
+
+AGENT_PATH = os.path.join(os.path.dirname(__file__), "..", "guest", "fc_guest_agent.py")
+
+
+def load_agent_module():
+    spec = importlib.util.spec_from_file_location("fc_guest_agent", AGENT_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# ---------------------------------------------------------------------------
+# TestWriteConnectionFile
+# ---------------------------------------------------------------------------
+
+class TestWriteConnectionFile:
+    def test_writes_valid_connection_json(self, tmp_path):
+        mod = load_agent_module()
+        conn_file = tmp_path / "kernel.json"
+        ports = {
+            "shell_port": 5555,
+            "iopub_port": 5556,
+            "stdin_port": 5557,
+            "control_port": 5558,
+            "hb_port": 5559,
+        }
+        key = "test-key-abc"
+        mod.write_connection_file(str(conn_file), ports, key)
+
+        assert conn_file.exists(), "Connection file was not created"
+        data = json.loads(conn_file.read_text())
+
+        assert data["ip"] == "0.0.0.0"
+        assert data["transport"] == "tcp"
+        assert data["key"] == key
+        assert data["signature_scheme"] == "hmac-sha256"
+        for port_name, port_val in ports.items():
+            assert data[port_name] == port_val, f"Port {port_name} mismatch"
+
+
+# ---------------------------------------------------------------------------
+# TestHandleMessage
+# ---------------------------------------------------------------------------
+
+HEADER_FMT = "!I"
+
+
+def _encode(obj: dict) -> bytes:
+    body = json.dumps(obj).encode()
+    return struct.pack(HEADER_FMT, len(body)) + body
+
+
+def _decode(data: bytes) -> dict:
+    header_size = struct.calcsize(HEADER_FMT)
+    length = struct.unpack(HEADER_FMT, data[:header_size])[0]
+    return json.loads(data[header_size: header_size + length])
+
+
+class TestHandleMessage:
+    def _get_fresh_mod(self):
+        """Load a fresh copy of the module so module-globals are reset."""
+        mod = load_agent_module()
+        mod.kernel_proc = None
+        mod.boot_time = time.monotonic()
+        return mod
+
+    def test_start_kernel_success(self):
+        mod = self._get_fresh_mod()
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        mock_proc.poll.return_value = None  # still running
+
+        msg = {
+            "action": "start_kernel",
+            "ports": {
+                "shell_port": 5555,
+                "iopub_port": 5556,
+                "stdin_port": 5557,
+                "control_port": 5558,
+                "hb_port": 5559,
+            },
+            "key": "abc123",
+        }
+
+        with patch("subprocess.Popen", return_value=mock_proc), \
+             patch("time.sleep"):
+            response = _decode(mod.handle_message(_encode(msg)))
+
+        assert response["status"] == "ready"
+        assert response["pid"] == 12345
+
+    def test_ping_response(self):
+        mod = self._get_fresh_mod()
+        msg = {"action": "ping"}
+        response = _decode(mod.handle_message(_encode(msg)))
+
+        assert response["status"] == "alive"
+        assert "uptime" in response
+        assert response["kernel_alive"] is False
+
+    def test_restart_kernel_kills_existing(self):
+        mod = self._get_fresh_mod()
+
+        old_proc = MagicMock()
+        old_proc.poll.return_value = None  # running
+        mod.kernel_proc = old_proc
+
+        new_proc = MagicMock()
+        new_proc.pid = 99999
+        new_proc.poll.return_value = None
+
+        msg = {
+            "action": "restart_kernel",
+            "ports": {
+                "shell_port": 6555,
+                "iopub_port": 6556,
+                "stdin_port": 6557,
+                "control_port": 6558,
+                "hb_port": 6559,
+            },
+            "key": "xyz",
+        }
+
+        with patch("subprocess.Popen", return_value=new_proc), \
+             patch("time.sleep"):
+            response = _decode(mod.handle_message(_encode(msg)))
+
+        old_proc.terminate.assert_called_once()
+        assert response["status"] == "ready"
+        assert response["pid"] == 99999
+
+    def test_signal_forwards_to_process_group(self):
+        mod = self._get_fresh_mod()
+
+        running_proc = MagicMock()
+        running_proc.pid = 77777
+        running_proc.poll.return_value = None
+        mod.kernel_proc = running_proc
+
+        msg = {"action": "signal", "signum": 15}
+
+        with patch("os.getpgid", return_value=77777) as mock_getpgid, \
+             patch("os.killpg") as mock_killpg:
+            response = _decode(mod.handle_message(_encode(msg)))
+
+        mock_getpgid.assert_called_once_with(77777)
+        mock_killpg.assert_called_once_with(77777, 15)
+        assert response["status"] == "ok"
+
+    def test_signal_no_kernel(self):
+        mod = self._get_fresh_mod()
+        mod.kernel_proc = None
+
+        msg = {"action": "signal", "signum": 15}
+        response = _decode(mod.handle_message(_encode(msg)))
+
+        assert response["status"] == "error"
+        assert "no kernel" in response.get("message", "").lower()
+
+    def test_unknown_action(self):
+        mod = self._get_fresh_mod()
+        msg = {"action": "frobnicate"}
+        response = _decode(mod.handle_message(_encode(msg)))
+
+        assert response["status"] == "error"
