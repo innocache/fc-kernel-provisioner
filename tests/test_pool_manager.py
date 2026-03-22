@@ -90,7 +90,7 @@ class TestPoolManagerAcquireRelease:
         vm.transition_to(VMState.ASSIGNED)
         manager._vms["vm-test1234"] = vm
 
-        await manager.release("vm-test1234", destroy=True)
+        await manager.release("vm-test1234")
         assert "vm-test1234" not in manager._vms
         manager._destroy_vm.assert_awaited_once()
 

@@ -27,7 +27,7 @@ class FirecrackerProcess:
         return None
 
     async def kill(self):
-        await self.pool_client.release(self.vm_id, destroy=True)
+        await self.pool_client.release(self.vm_id)
         self._exit_code = -9
 
     async def terminate(self):
@@ -170,7 +170,7 @@ class FirecrackerProvisioner(KernelProvisionerBase):
                 timeout=30,
             )
         elif self.vm_id and self.pool_client:
-            await self.pool_client.release(self.vm_id, destroy=True)
+            await self.pool_client.release(self.vm_id)
             self.vm_id = None
             self.vm_ip = None
             self.vsock_path = None

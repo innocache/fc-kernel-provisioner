@@ -54,7 +54,7 @@ class TestPoolManagerServer:
 
     async def test_release(self, client):
         c = await client
-        resp = await c.post("/api/vms/vm-test1234/release", json={"destroy": True})
+        resp = await c.post("/api/vms/vm-test1234/release", json={})
         assert resp.status == 200
 
     async def test_health(self, client):
