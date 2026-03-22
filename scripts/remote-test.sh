@@ -207,11 +207,11 @@ ssh "$HOST" "cd $REMOTE_DIR && sudo uv run jupyter kernelspec install config/ker
 
 # Start pool manager in background
 step "Starting pool manager..."
-ssh "$HOST" "cd $REMOTE_DIR && sudo uv run python -m fc_pool_manager.server --config config/fc-pool.yaml --socket /var/run/fc-pool.sock -v &>/tmp/fc-pool-manager.log &"
+ssh "$HOST" "cd $REMOTE_DIR && nohup sudo uv run python -m fc_pool_manager.server --config config/fc-pool.yaml --socket /var/run/fc-pool.sock -v </dev/null &>/tmp/fc-pool-manager.log &"
 
 # Start Kernel Gateway in background
 step "Starting Kernel Gateway..."
-ssh "$HOST" "cd $REMOTE_DIR && uv run jupyter kernelgateway --KernelGatewayApp.default_kernel_name=python3-firecracker --KernelGatewayApp.port=8888 &>/tmp/fc-kernel-gateway.log &"
+ssh "$HOST" "cd $REMOTE_DIR && nohup uv run jupyter kernelgateway --KernelGatewayApp.default_kernel_name=python3-firecracker --KernelGatewayApp.port=8888 </dev/null &>/tmp/fc-kernel-gateway.log &"
 
 # Poll until services are ready (timeout 120s)
 step "Waiting for services to be ready (timeout 120s)..."
