@@ -70,17 +70,18 @@ class TestAcquireEdgeCases:
         return mgr
 
     async def test_acquire_skips_booting_vms(self, manager):
-        """BOOTING VMs should not be acquired."""
+        """BOOTING VMs should not be acquired; they should be skipped in favor of new boots."""
         vm = make_vm(state=VMState.BOOTING)
         manager._vms["vm-test1234"] = vm
+
+        # With only a BOOTING VM present, total_count < max_vms, so acquire()
+        # should skip the BOOTING VM and attempt to boot a new one via _boot_vm.
+        # Our mock _boot_vm returns None, so acquire() will ultimately raise pool_exhausted.
         with pytest.raises(RuntimeError, match="pool_exhausted"):
-            # max_vms=5, we have 1 booting, need to try on-demand boot
-            # but _boot_vm returns None, so it will fail
-            for i in range(manager._config.max_vms):
-                m = make_vm(vm_id=f"vm-fill{i:04d}", ip=f"172.16.0.{i+10}", cid=i+10, state=VMState.ASSIGNED)
-                manager._vms[m.vm_id] = m
             await manager.acquire(vcpu=1, mem_mib=512)
 
+        # Ensure that we actually attempted to boot a new VM, proving BOOTING VMs were skipped.
+        manager._boot_vm.assert_awaited()
     async def test_acquire_skips_assigned_vms(self, manager):
         """Already ASSIGNED VMs should not be double-acquired."""
         vm = make_vm(state=VMState.ASSIGNED)
