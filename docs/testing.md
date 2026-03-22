@@ -127,7 +127,7 @@ sudo uv run python -m fc_pool_manager.server \
     --socket /var/run/fc-pool.sock -v
 
 # 7. Install kernelspec
-uv run jupyter kernelspec install config/ \
+uv run jupyter kernelspec install config/kernelspec/ \
     --name python3-firecracker \
     --user
 
@@ -374,3 +374,157 @@ jobs:
           sleep 5
           uv run pytest tests/test_integration.py -v -m integration
 ```
+
+---
+
+## Remote Integration Testing
+
+Run the full test suite on a remote KVM host from your local machine with a single command.
+
+### Prerequisites
+
+- **SSH access**: Key-based SSH to the remote host (password auth not supported)
+- **SSH config**: Configure your key via `~/.ssh/config` or use default key files
+- **Remote user**: Must have passwordless `sudo`
+- **Remote host**: Ubuntu 24.04, 8+ cores, 16+ GB RAM, KVM enabled (`/dev/kvm`)
+
+Example `~/.ssh/config`:
+
+```
+Host fc-test
+    HostName 203.0.113.10
+    User ubuntu
+    IdentityFile ~/.ssh/my-key.pem
+```
+
+### Usage
+
+```bash
+# Full run: setup + unit + smoke + integration + teardown
+./scripts/remote-test.sh fc-test
+
+# Fast re-run after code changes (skip host setup)
+./scripts/remote-test.sh fc-test --skip-setup
+
+# Unit tests only (no services needed)
+./scripts/remote-test.sh fc-test --unit-only
+
+# Keep services running after tests (for debugging)
+./scripts/remote-test.sh fc-test --keep-services
+```
+
+### What happens
+
+1. **Sync** — rsync project to `~/fc-kernel-provisioner` on remote host
+2. **Setup** — install Firecracker, Python deps, rootfs, network bridge (skipped with `--skip-setup`)
+3. **Start services** — pool manager + Kernel Gateway in background, poll until ready (120s timeout)
+4. **Run tests** — unit → smoke → integration (or just unit with `--unit-only`)
+5. **Teardown** — kill services, remove socket, clean up leftover VMs
+
+### What persists between runs
+
+| Persists | Torn down |
+|----------|-----------|
+| Firecracker binaries | Pool manager process |
+| Linux kernel (`vmlinux`) | Kernel Gateway process |
+| Rootfs image | Unix socket file |
+| Network bridge (`fcbr0`) | Running VMs / jailer processes |
+| System deps (apt packages) | TAP devices |
+| Python venv | Jail directories |
+
+### Troubleshooting
+
+**SSH connection fails:**
+```bash
+# Test connectivity
+ssh fc-test 'echo hello'
+
+# Check key permissions
+ls -la ~/.ssh/my-key.pem  # should be 600
+
+# Verbose SSH for debugging
+ssh -vv fc-test 'echo hello'
+```
+
+**Services don't start within 120s:**
+- Check remote logs: `ssh fc-test 'cat /tmp/fc-pool-manager.log'`
+- Check KVM: `ssh fc-test 'ls -la /dev/kvm'`
+- First run takes longer due to pool pre-warming
+
+**Tests fail but services are fine:**
+- Re-run with `--keep-services` to debug interactively
+- SSH in and run tests manually: `ssh fc-test 'cd ~/fc-kernel-provisioner && uv run pytest tests/test_integration.py -v -m integration -s'`
+
+---
+
+## Production Deployment
+
+Deploy the pool manager and Kernel Gateway as systemd services on a remote host.
+
+### Prerequisites
+
+Same SSH and host requirements as remote testing (see above).
+
+### Usage
+
+```bash
+# Full deployment (idempotent — safe to re-run)
+./scripts/deploy.sh fc-prod deploy
+
+# Fast update after code changes
+./scripts/deploy.sh fc-prod update
+
+# Service management
+./scripts/deploy.sh fc-prod stop
+./scripts/deploy.sh fc-prod start
+./scripts/deploy.sh fc-prod restart
+./scripts/deploy.sh fc-prod status
+./scripts/deploy.sh fc-prod logs
+
+# Remove everything (prompts for confirmation)
+./scripts/deploy.sh fc-prod teardown
+```
+
+### deploy vs update
+
+| | `deploy` | `update` |
+|---|---------|----------|
+| Sync code | ✓ | ✓ |
+| Host setup (Firecracker, deps) | ✓ | — |
+| Build rootfs | Always | Only if `guest/` changed |
+| Network setup | ✓ | — |
+| Install systemd units | ✓ | — |
+| Restart services | ✓ | ✓ |
+
+Use `deploy` for first-time setup or after infrastructure changes. Use `update` for code-only changes (faster).
+
+### Systemd services
+
+Two services are installed:
+
+- **`fc-pool-manager`** — VM pool manager daemon (Unix socket API at `/var/run/fc-pool.sock`)
+- **`fc-kernel-gateway`** — Jupyter Kernel Gateway on port 8888 (depends on pool manager)
+
+Both run as `root` (required for KVM/jailer access) and auto-restart on failure.
+
+```bash
+# Check service status
+sudo systemctl status fc-pool-manager fc-kernel-gateway
+
+# View logs
+sudo journalctl -u fc-pool-manager -u fc-kernel-gateway -f
+```
+
+### Teardown
+
+`teardown` removes everything and restores the host:
+
+1. Stop and disable systemd services
+2. Remove systemd unit files
+3. Kill leftover VMs, remove TAP devices, clean jail directories
+4. Remove network bridge and NAT rules
+5. Remove rootfs image
+6. Remove Firecracker binaries, kernel, jailer user
+7. Remove deployed code and `/opt/fc-kernel-provisioner` symlink
+
+**Confirmation required** — you must type `yes` to proceed.

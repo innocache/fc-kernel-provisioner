@@ -38,14 +38,18 @@ fc-kernel-provisioner/
 │   └── build_rootfs.sh      # Builds Alpine rootfs with Python + data science libs
 │
 ├── config/
-│   ├── kernel.json          # Jupyter kernelspec
-│   ├── fc-pool.yaml         # Pool manager configuration
-│   ├── setup_network.sh     # Host bridge + NAT setup (with teardown mode)
-│   └── fc-pool-manager.service  # systemd unit
+│   ├── fc-pool-manager.service    # systemd unit (pool manager)
+│   ├── fc-kernel-gateway.service  # systemd unit (Kernel Gateway)
+│   ├── fc-pool.yaml               # Pool manager configuration
+│   ├── kernelspec/
+│   │   └── kernel.json            # Jupyter kernelspec
+│   └── setup_network.sh           # Host bridge + NAT setup (with teardown mode)
 │
 ├── scripts/
 │   ├── setup-host.sh        # Host setup (with teardown + status modes)
-│   └── run-tests.sh         # Test runner (unit/smoke/integration)
+│   ├── run-tests.sh         # Test runner (unit/smoke/integration)
+│   ├── remote-test.sh       # Remote integration test runner
+│   └── deploy.sh            # Production deployment manager
 │
 └── tests/                   # 207 unit tests, no KVM required
 ```
@@ -89,7 +93,7 @@ sudo uv run python -m fc_pool_manager.server \
     --socket /var/run/fc-pool.sock -v
 
 # 5. Install kernelspec + start Kernel Gateway
-uv run jupyter kernelspec install config/ --name python3-firecracker --user
+uv run jupyter kernelspec install config/kernelspec/ --name python3-firecracker --user
 uv run jupyter kernelgateway \
     --KernelGatewayApp.default_kernel_name=python3-firecracker \
     --KernelGatewayApp.port=8888
@@ -152,6 +156,18 @@ uv run pytest tests/ -v -m "not integration"
 # Integration tests (full pipeline)
 ./scripts/run-tests.sh integration
 ```
+
+### Remote Testing & Deployment
+
+```bash
+# Run full test suite on a remote KVM host
+./scripts/remote-test.sh user@host
+
+# Deploy as systemd services
+./scripts/deploy.sh user@host deploy
+```
+
+See [docs/testing.md](docs/testing.md) for full details.
 
 ## Host Cleanup
 

@@ -5,12 +5,13 @@ After=network.target
 [Service]
 Type=simple
 ExecStartPre=/bin/bash /opt/fc-kernel-provisioner/config/setup_network.sh
-ExecStart=/usr/bin/python3 -m fc_pool_manager.server --config /opt/fc-kernel-provisioner/config/fc-pool.yaml
+ExecStart=/usr/bin/env uv run python -m fc_pool_manager.server --config /opt/fc-kernel-provisioner/config/fc-pool.yaml --socket /var/run/fc-pool.sock
 Restart=on-failure
 RestartSec=5
 # Root required: jailer needs CAP_SYS_ADMIN for cgroup setup and /dev/kvm access
 User=root
 Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/opt/fc-kernel-provisioner
 
 [Install]
 WantedBy=multi-user.target

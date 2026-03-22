@@ -1,0 +1,19 @@
+[Unit]
+Description=Jupyter Kernel Gateway (Firecracker)
+After=fc-pool-manager.service
+Requires=fc-pool-manager.service
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/env uv run jupyter kernelspec install /opt/fc-kernel-provisioner/config/kernelspec/ --name python3-firecracker --sys-prefix
+ExecStart=/usr/bin/env uv run jupyter kernelgateway --KernelGatewayApp.default_kernel_name=python3-firecracker --KernelGatewayApp.port=8888
+Restart=on-failure
+RestartSec=5
+# Root required: pool manager socket is root-owned, and Kernel Gateway
+# needs to start kernels via the provisioner which talks to the pool socket
+User=root
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/opt/fc-kernel-provisioner
+
+[Install]
+WantedBy=multi-user.target
