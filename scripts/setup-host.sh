@@ -89,7 +89,7 @@ cmd_teardown() {
     echo "This will NOT remove:"
     echo "  - System packages installed via apt (curl, jq, iptables, etc.)"
     echo "    These are common utilities that may be used by other software."
-    echo "  - uv (installed in user home, remove with: rm ~/.local/bin/uv)"
+    echo "  - uv (installed to /usr/local/bin/uv)"
     echo "  - KVM group (may be used by other software)"
     echo ""
 
@@ -154,7 +154,7 @@ cmd_teardown() {
     echo ""
     info "Teardown complete. Host restored."
     info "Optional manual cleanup:"
-    echo "  - Remove uv:          rm ~/.local/bin/uv"
+    echo "  - Remove uv:          rm /usr/local/bin/uv"
     echo "  - Remove apt packages: sudo apt remove curl jq ebtables bridge-utils"
     echo "    (only if nothing else uses them)"
 }
@@ -209,11 +209,15 @@ cmd_setup() {
         util-linux \
         alpine-make-rootfs 2>/dev/null || true
 
-    # Install uv if not present
+    # Install uv if not present (system-wide so non-root users can use it)
     if ! command -v uv &>/dev/null; then
         info "Installing uv..."
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-        export PATH="$HOME/.local/bin:$PATH"
+        curl -LsSf https://astral.sh/uv/install.sh | env INSTALLER_NO_MODIFY_PATH=1 sh
+        # Move to /usr/local/bin so all users can access it
+        if [[ -f "$HOME/.local/bin/uv" ]]; then
+            mv "$HOME/.local/bin/uv" /usr/local/bin/uv
+            rm -f "$HOME/.local/bin/uvx"
+        fi
     fi
     info "System packages installed ✓"
 
