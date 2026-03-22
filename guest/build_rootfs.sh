@@ -2,9 +2,32 @@
 # Build the guest rootfs ext4 image for Firecracker microVMs.
 # Must be run as root on an x86_64 Linux host.
 #
-# Usage: sudo ./build_rootfs.sh [output_path]
+# Usage:
+#   sudo ./build_rootfs.sh [output_path]    Build the rootfs image
+#   sudo ./build_rootfs.sh --clean [path]   Remove the built image
+#
 # Default output: /opt/firecracker/rootfs.ext4
+#
+# Host impact: This script uses temp dirs (auto-cleaned) and writes ONLY
+# the output ext4 file. No packages are installed on the host, no system
+# config is modified. All package installation happens inside a chroot.
 set -euo pipefail
+
+# ── Clean mode ───────────────────────────────────────────────────────────────
+
+if [[ "${1:-}" == "--clean" ]]; then
+    IMAGE=${2:-/opt/firecracker/rootfs.ext4}
+    if [[ -f "$IMAGE" ]]; then
+        echo "==> Removing rootfs image: $IMAGE"
+        rm -f "$IMAGE"
+        echo "==> Cleaned"
+    else
+        echo "==> Nothing to clean (no file at $IMAGE)"
+    fi
+    exit 0
+fi
+
+# ── Build mode ───────────────────────────────────────────────────────────────
 
 ROOTFS_DIR=$(mktemp -d)
 IMAGE=${1:-/opt/firecracker/rootfs.ext4}
@@ -12,7 +35,7 @@ IMAGE_SIZE_MB=512
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 cleanup() {
-    echo "==> Cleaning up"
+    echo "==> Cleaning up temp dirs"
     if mountpoint -q "${MOUNT_DIR:-/nonexistent}" 2>/dev/null; then
         umount "$MOUNT_DIR"
     fi
