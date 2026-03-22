@@ -1,6 +1,6 @@
 # Firecracker Kernel Provisioner — Core Slice Implementation Plan
 
-> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Execute Python code inside a jailed Firecracker microVM and return stdout to the host via the Jupyter kernel protocol.
 
@@ -9,6 +9,25 @@
 **Tech Stack:** Python 3.11+, uv, asyncio, aiohttp, jupyter_client, ipykernel, Firecracker + jailer, AF_VSOCK, Alpine Linux rootfs
 
 **Spec:** `docs/superpowers/specs/2026-03-21-fc-kernel-provisioner-design.md`
+
+---
+
+## Status Summary (updated 2026-03-22)
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| Chunk 1: Scaffolding + Guest Agent (Tasks 1–3) | **DONE** | All implemented and tested |
+| Chunk 2: Networking + Config (Tasks 4–6) | **DONE** | All implemented and tested |
+| Chunk 3: Pool Manager Core (Tasks 7–10) | **DONE** | All implemented and tested |
+| Chunk 4: Provisioner Plugin (Tasks 11–13) | **DONE** | All implemented and tested |
+| Chunk 5: Integration Test (Tasks 14–15) | **DONE** | Integration test written; unit tests all pass (207 tests) |
+| Post-plan: Edge case tests | **DONE** | 8 edge case test files added (PRs #10–#12) |
+| Post-plan: Code review fixes | **DONE** | 22 issues fixed (PR #13) |
+| Post-plan: Reversible host setup | **DONE** | Teardown modes for all scripts (PR #14) |
+| Post-plan: Testing docs | **DONE** | docs/testing.md updated (PR #15) |
+| Post-plan: Graceful test skips | **DONE** | pytest.importorskip for optional deps (PR #16) |
+| Post-plan: README | **DONE** | Project README.md added (PR #24) |
+| **Integration testing on KVM host** | **NOT STARTED** | Requires Linux host with /dev/kvm |
 
 ---
 
@@ -23,7 +42,7 @@
 - Create: `fc_pool_manager/__init__.py`
 - Create: `tests/__init__.py`
 
-- [ ] **Step 1: Create pyproject.toml**
+- [x] **Step 1: Create pyproject.toml**
 
 ```toml
 [build-system]
@@ -57,7 +76,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 ```
 
-- [ ] **Step 2: Create .gitignore**
+- [x] **Step 2: Create .gitignore**
 
 ```gitignore
 .venv/
@@ -69,7 +88,7 @@ build/
 .pytest_cache/
 ```
 
-- [ ] **Step 3: Create package init files**
+- [x] **Step 3: Create package init files**
 
 `fc_provisioner/__init__.py`:
 ```python
@@ -86,12 +105,12 @@ __all__ = ["FirecrackerProvisioner"]
 ```python
 ```
 
-- [ ] **Step 4: Initialize uv and sync dependencies**
+- [x] **Step 4: Initialize uv and sync dependencies**
 
 Run: `uv sync --group dev`
 Expected: Creates `.venv/`, installs all dependencies. (provisioner import will fail until provisioner.py exists — that's fine)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add .gitignore pyproject.toml uv.lock fc_provisioner/__init__.py fc_pool_manager/__init__.py tests/__init__.py
@@ -108,7 +127,7 @@ git commit -m "feat: scaffold project structure with pyproject.toml and uv"
 
 The guest agent runs inside the VM (not importable from the host), but we can unit test its message handling logic in isolation.
 
-- [ ] **Step 1: Write failing tests for message handling**
+- [x] **Step 1: Write failing tests for message handling**
 
 `tests/test_guest_agent.py`:
 ```python
@@ -275,12 +294,12 @@ class TestHandleMessage:
         assert "unknown action" in resp["error"]
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_guest_agent.py -v`
 Expected: FAIL — `fc_guest_agent.py` does not exist yet
 
-- [ ] **Step 3: Implement the guest agent**
+- [x] **Step 3: Implement the guest agent**
 
 `guest/fc_guest_agent.py`:
 ```python
@@ -441,12 +460,12 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_guest_agent.py -v`
 Expected: All 6 tests PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add guest/fc_guest_agent.py tests/test_guest_agent.py
@@ -463,7 +482,7 @@ git commit -m "feat: implement guest agent with vsock message handling"
 
 These are shell scripts — no unit tests, validated by manual VM boot in Task 8.
 
-- [ ] **Step 1: Create the init script**
+- [x] **Step 1: Create the init script**
 
 `guest/init.sh`:
 ```bash
@@ -486,7 +505,7 @@ ip link set eth0 up
 exec python3 /usr/local/bin/fc-guest-agent
 ```
 
-- [ ] **Step 2: Create the rootfs build script**
+- [x] **Step 2: Create the rootfs build script**
 
 `guest/build_rootfs.sh`:
 ```bash
@@ -544,11 +563,11 @@ umount "$MOUNT_DIR"
 echo "==> Done: $IMAGE ($(du -h "$IMAGE" | cut -f1))"
 ```
 
-- [ ] **Step 3: Make scripts executable**
+- [x] **Step 3: Make scripts executable**
 
 Run: `chmod +x guest/build_rootfs.sh guest/init.sh`
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add guest/init.sh guest/build_rootfs.sh
@@ -564,7 +583,7 @@ git commit -m "feat: add guest init script and rootfs build script"
 **Files:**
 - Create: `config/setup_network.sh`
 
-- [ ] **Step 1: Create the network setup script**
+- [x] **Step 1: Create the network setup script**
 
 `config/setup_network.sh`:
 ```bash
@@ -602,11 +621,11 @@ echo "    Bridge: $BRIDGE ($HOST_IP/24)"
 echo "    NAT: ${SUBNET}.0/24 → $HOST_IFACE"
 ```
 
-- [ ] **Step 2: Make executable**
+- [x] **Step 2: Make executable**
 
 Run: `chmod +x config/setup_network.sh`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add config/setup_network.sh
@@ -624,7 +643,7 @@ git commit -m "feat: add host network bridge setup script"
 - Create: `fc_pool_manager/config.py`
 - Create: `tests/test_config.py`
 
-- [ ] **Step 1: Create config files**
+- [x] **Step 1: Create config files**
 
 `config/fc-pool.yaml`:
 ```yaml
@@ -693,7 +712,7 @@ Environment=PYTHONUNBUFFERED=1
 WantedBy=multi-user.target
 ```
 
-- [ ] **Step 2: Write failing test for config loader**
+- [x] **Step 2: Write failing test for config loader**
 
 `tests/test_config.py`:
 ```python
@@ -761,12 +780,12 @@ jailer:
             PoolConfig.from_yaml("/nonexistent/config.yaml")
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_config.py -v`
 Expected: FAIL — `fc_pool_manager.config` does not exist
 
-- [ ] **Step 4: Implement config loader**
+- [x] **Step 4: Implement config loader**
 
 `fc_pool_manager/config.py`:
 ```python
@@ -834,12 +853,12 @@ class PoolConfig:
         )
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_config.py -v`
 Expected: All 2 tests PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add config/fc-pool.yaml config/kernel.json config/fc-pool-manager.service fc_pool_manager/config.py tests/test_config.py
@@ -854,7 +873,7 @@ git commit -m "feat: add pool manager config loader and configuration files"
 - Create: `fc_pool_manager/network.py`
 - Create: `tests/test_network.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 `tests/test_network.py`:
 ```python
@@ -923,12 +942,12 @@ class TestNetworkManager:
         assert ip2 == ip
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_network.py -v`
 Expected: FAIL — module does not exist
 
-- [ ] **Step 3: Implement network manager**
+- [x] **Step 3: Implement network manager**
 
 `fc_pool_manager/network.py`:
 ```python
@@ -1027,12 +1046,12 @@ class NetworkManager:
             raise subprocess.CalledProcessError(proc.returncode, cmd, stderr=stderr)
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_network.py -v`
 Expected: All 8 tests PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add fc_pool_manager/network.py tests/test_network.py
@@ -1049,7 +1068,7 @@ git commit -m "feat: implement IP allocator and network manager"
 - Create: `fc_pool_manager/vm.py`
 - Create: `tests/test_vm.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 `tests/test_vm.py`:
 ```python
@@ -1132,12 +1151,12 @@ class TestVMInstance:
             vm.transition_to(VMState.ASSIGNED)
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_vm.py -v`
 Expected: FAIL — module does not exist
 
-- [ ] **Step 3: Implement VMInstance and CIDAllocator**
+- [x] **Step 3: Implement VMInstance and CIDAllocator**
 
 `fc_pool_manager/vm.py`:
 ```python
@@ -1214,12 +1233,12 @@ class VMInstance:
         self.state = new_state
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_vm.py -v`
 Expected: All 7 tests PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add fc_pool_manager/vm.py tests/test_vm.py
@@ -1237,7 +1256,7 @@ built in Chunk 4), the pool manager has its own minimal vsock module.
 **Files:**
 - Create: `fc_pool_manager/vsock.py`
 
-- [ ] **Step 1: Create vsock helpers**
+- [x] **Step 1: Create vsock helpers**
 
 `fc_pool_manager/vsock.py`:
 ```python
@@ -1289,7 +1308,7 @@ async def vsock_request(
         await writer.wait_closed()
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add fc_pool_manager/vsock.py
@@ -1304,7 +1323,7 @@ git commit -m "feat: add pool manager vsock helpers (avoids circular dependency)
 - Create: `fc_pool_manager/firecracker_api.py`
 - Create: `tests/test_firecracker_api.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 `tests/test_firecracker_api.py`:
 ```python
@@ -1350,12 +1369,12 @@ class TestFirecrackerAPI:
         assert body["uds_path"] == "v.sock"
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_firecracker_api.py -v`
 Expected: FAIL — module does not exist
 
-- [ ] **Step 3: Implement Firecracker API client**
+- [x] **Step 3: Implement Firecracker API client**
 
 `fc_pool_manager/firecracker_api.py`:
 ```python
@@ -1435,12 +1454,12 @@ class FirecrackerAPI:
         await self._put("/actions", {"action_type": "InstanceStart"})
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_firecracker_api.py -v`
 Expected: All 5 tests PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add fc_pool_manager/firecracker_api.py tests/test_firecracker_api.py
@@ -1455,7 +1474,7 @@ git commit -m "feat: implement Firecracker REST API client"
 - Create: `fc_pool_manager/manager.py`
 - Create: `tests/test_pool_manager.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 `tests/test_pool_manager.py`:
 ```python
@@ -1562,12 +1581,12 @@ class TestPoolManagerAcquireRelease:
         assert manager.idle_count == 3
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_pool_manager.py -v`
 Expected: FAIL — module does not exist
 
-- [ ] **Step 3: Implement pool manager**
+- [x] **Step 3: Implement pool manager**
 
 `fc_pool_manager/manager.py`:
 ```python
@@ -1831,12 +1850,12 @@ class PoolManager:
         raise TimeoutError(f"Socket {path} did not appear within {timeout}s")
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_pool_manager.py -v`
 Expected: All 5 tests PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add fc_pool_manager/manager.py tests/test_pool_manager.py
@@ -1852,7 +1871,7 @@ git commit -m "feat: implement pool manager with acquire/release and VM lifecycl
 - Create: `fc_pool_manager/__main__.py`
 - Create: `tests/test_server.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 `tests/test_server.py`:
 ```python
@@ -1930,12 +1949,12 @@ class TestPoolManagerServer:
         assert data["idle"] == 3
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_server.py -v`
 Expected: FAIL — module does not exist
 
-- [ ] **Step 3: Implement the HTTP server**
+- [x] **Step 3: Implement the HTTP server**
 
 `fc_pool_manager/server.py`:
 ```python
@@ -2071,12 +2090,12 @@ from .server import main
 main()
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_server.py -v`
 Expected: All 6 tests PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add fc_pool_manager/server.py fc_pool_manager/__main__.py tests/test_server.py
@@ -2093,7 +2112,7 @@ git commit -m "feat: implement pool manager HTTP server with acquire/release/hea
 - Create: `fc_provisioner/vsock_client.py`
 - Create: `tests/test_vsock_client.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 `tests/test_vsock_client.py`:
 ```python
@@ -2130,12 +2149,12 @@ class TestMessageFraming:
         assert HEADER_SIZE == 4
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_vsock_client.py -v`
 Expected: FAIL — module does not exist
 
-- [ ] **Step 3: Implement vsock client**
+- [x] **Step 3: Implement vsock client**
 
 `fc_provisioner/vsock_client.py`:
 ```python
@@ -2224,12 +2243,12 @@ async def vsock_send_only(
         await writer.wait_closed()
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_vsock_client.py -v`
 Expected: All 4 tests PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add fc_provisioner/vsock_client.py tests/test_vsock_client.py
@@ -2244,7 +2263,7 @@ git commit -m "feat: implement vsock client with length-prefixed JSON protocol"
 - Create: `fc_provisioner/pool_client.py`
 - Create: `tests/test_pool_client.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 `tests/test_pool_client.py`:
 ```python
@@ -2266,12 +2285,12 @@ class TestPoolClient:
         assert "localhost" in client._base_url
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_pool_client.py -v`
 Expected: FAIL — module does not exist
 
-- [ ] **Step 3: Implement pool client**
+- [x] **Step 3: Implement pool client**
 
 `fc_provisioner/pool_client.py`:
 ```python
@@ -2326,12 +2345,12 @@ class PoolClient:
             return False
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_pool_client.py -v`
 Expected: All 2 tests PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add fc_provisioner/pool_client.py tests/test_pool_client.py
@@ -2346,7 +2365,7 @@ git commit -m "feat: implement pool client for provisioner-to-pool-manager IPC"
 - Create: `fc_provisioner/provisioner.py`
 - Create: `tests/test_provisioner.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 `tests/test_provisioner.py`:
 ```python
@@ -2499,12 +2518,12 @@ class TestFirecrackerProvisioner:
         assert info["vm_ip"] == "172.16.0.2"
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_provisioner.py -v`
 Expected: FAIL — `provisioner.py` does not exist
 
-- [ ] **Step 3: Implement the provisioner**
+- [x] **Step 3: Implement the provisioner**
 
 `fc_provisioner/provisioner.py`:
 ```python
@@ -2680,12 +2699,12 @@ class FirecrackerProvisioner(KernelProvisionerBase):
             self.process = FirecrackerProcess(self.vm_id, self.pool_client)
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_provisioner.py -v`
 Expected: All 7 tests PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add fc_provisioner/provisioner.py tests/test_provisioner.py
@@ -2704,7 +2723,7 @@ git commit -m "feat: implement FirecrackerProvisioner kernel provisioner plugin"
 
 This test requires a running pool manager, Kernel Gateway, and real Firecracker VMs. Skip in CI, run manually on KVM hosts.
 
-- [ ] **Step 1: Write the integration test**
+- [x] **Step 1: Write the integration test**
 
 `tests/test_integration.py`:
 ```python
@@ -2842,7 +2861,7 @@ class TestFullPipeline:
         assert result["stdout"].strip() == "0\n1\n2"
 ```
 
-- [ ] **Step 2: Add pytest marker to pyproject.toml**
+- [x] **Step 2: Add pytest marker to pyproject.toml**
 
 Add under `[tool.pytest.ini_options]`:
 ```toml
@@ -2851,12 +2870,12 @@ markers = [
 ]
 ```
 
-- [ ] **Step 3: Verify unit tests still pass**
+- [x] **Step 3: Verify unit tests still pass**
 
 Run: `uv run pytest tests/ -v -m "not integration"`
 Expected: All unit tests PASS, integration tests skipped
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/test_integration.py pyproject.toml
@@ -2867,22 +2886,107 @@ git commit -m "feat: add integration smoke test for full Firecracker pipeline"
 
 ### Task 15: Final verification
 
-- [ ] **Step 1: Run full unit test suite**
+- [x] **Step 1: Run full unit test suite**
 
 Run: `uv run pytest tests/ -v -m "not integration"`
 Expected: All tests PASS
 
-- [ ] **Step 2: Verify package syncs**
+- [x] **Step 2: Verify package syncs**
 
 Run: `uv sync --group dev`
 Expected: No errors
 
-- [ ] **Step 3: Verify entry point**
+- [x] **Step 3: Verify entry point**
 
 Run: `uv run python -c "from fc_provisioner import FirecrackerProvisioner; print(FirecrackerProvisioner)"`
 Expected: `<class 'fc_provisioner.provisioner.FirecrackerProvisioner'>`
 
-- [ ] **Step 4: Final commit if needed**
+- [x] **Step 4: Final commit if needed**
 
 Run: `git status`
 If untracked files: `git add` and commit them.
+
+---
+
+## Post-Plan Work (completed after Tasks 1–15)
+
+### Task 16: Edge case tests (PR #10, #11, #12)
+
+- [x] Added 8 edge case test files covering all modules:
+  - `tests/test_config_edge_cases.py` — defaults, missing fields, format edge cases
+  - `tests/test_guest_agent_edge_cases.py` — crash handling, missing fields, concurrent restart
+  - `tests/test_network_edge_cases.py` — boundary IPs, double release, MAC generation
+  - `tests/test_pool_manager_edge_cases.py` — race conditions, exhaustion, replenish behavior
+  - `tests/test_provisioner_edge_cases.py` — cleanup, state round-trip, config defaults
+  - `tests/test_server_edge_cases.py` — default params, 404, response structure
+  - `tests/test_vm_edge_cases.py` — exhaustive state transitions, CID boundaries
+  - `tests/test_vsock_client_edge_cases.py` — encode/decode edge cases, round-trip
+- [x] Fixed bugs found during edge case testing:
+  - Race condition in pool manager acquire with asyncio lock
+  - CID allocator MAX_CID boundary (2^32-1)
+  - VM state machine transition error messages include vm_id
+
+### Task 17: Comprehensive code review fixes (PR #13)
+
+22 issues fixed:
+
+- [x] Fix #1: Reap zombie after kill in `_destroy_vm` — added `await vm.jailer_process.wait()`
+- [x] Fix #2: Release error handling — wrapped `manager.release()` in try/except in server
+- [x] Fix #3: `boot_args` injection — `.format(vm_ip=ip)` → `.replace("{vm_ip}", ip)`
+- [x] Fix #5: Release handles STOPPING state — guard `if vm.state != VMState.STOPPING`
+- [x] Fix #6: Health check lock — wrapped in `async with self._acquire_lock`
+- [x] Fix #7: Guest agent waits for old kernel to die (timeout + kill fallback)
+- [x] Fix #8: `vsock_send_only` — writer guard in finally block
+- [x] Fix #9/#10: Deduplicated `launch_kernel`/`launch_process` into `_start_guest_kernel()`
+- [x] Fix #11: `cleanup(restart=True)` checks response status, creates new FirecrackerProcess
+- [x] Fix #12: Removed dead `replenish_threshold` from config
+- [x] Fix #13: `is_alive` returns `dict[str, Any]` instead of `bool`
+- [x] Fix #14: Body parsing — `request.can_read_body` check with fallback
+- [x] Fix #15: systemd service comment for root requirement
+- [x] Fix #17: `asyncio.get_event_loop()` → `asyncio.get_running_loop()`
+- [x] Fix #18: `MAX_MESSAGE_SIZE = 1MB` validation in vsock_request
+- [x] Fix #19: `uuid.uuid4().hex[:8]` → `secrets.token_hex(8)` for VM ID entropy
+- [x] Fix #20: Guest init.sh — supervisor loop restarts agent on crash
+- [x] Fix #21: Release endpoint POST → DELETE (`/api/vms/{vm_id}`)
+- [x] Fix #22: CID in log message
+
+### Task 18: Reversible host setup scripts (PR #14)
+
+- [x] `scripts/setup-host.sh` — added `teardown` and `status` modes
+- [x] `config/setup_network.sh` — added `teardown` mode (removes bridge, NAT, ebtables)
+- [x] `guest/build_rootfs.sh` — added `--clean` flag and host pollution documentation
+
+### Task 19: Testing documentation (PR #15)
+
+- [x] Updated `docs/testing.md` with current test counts and coverage
+- [x] Added per-module coverage table
+- [x] Added cleanup/teardown section with host impact summary
+- [x] Added Pool Manager API reference table
+
+### Task 20: Graceful test skips (PR #16)
+
+- [x] `fc_provisioner/__init__.py` — lazy import with try/except for jupyter_client
+- [x] `pytest.importorskip("jupyter_client")` in provisioner test files
+- [x] `pytest.importorskip("pytest_aiohttp")` in server test files
+- [x] Result: 207 tests pass with all deps; tests skip gracefully without optional deps
+
+### Task 21: Project README (PR #24)
+
+- [x] Created `README.md` with architecture, quick start, API reference, configuration, and testing docs
+
+---
+
+## Remaining Work
+
+All core slice implementation is complete. The following items require a **Linux host with KVM** and are tracked as GitHub issues:
+
+| Issue | Title | Priority |
+|-------|-------|----------|
+| — | **Run integration smoke test on KVM host** | Next step |
+| #17 | Sandbox client library + output capture | Follow-on |
+| #18 | Dashboard serving (Panel + Caddy) | Follow-on |
+| #19 | Execution API (FastAPI wrapper) | Follow-on |
+| #20 | Network hardening | Follow-on |
+| #21 | Snapshot optimization (sub-50ms cold starts) | Follow-on |
+| #22 | Prometheus metrics endpoint | Follow-on |
+| #23 | VM auto-cull (timeout idle VMs) | Follow-on |
