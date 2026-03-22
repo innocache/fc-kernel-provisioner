@@ -147,7 +147,16 @@ class PoolManager:
             os.makedirs(jail_path, exist_ok=True)
             kernel_dest = os.path.join(jail_path, "vmlinux")
             if not os.path.exists(kernel_dest):
-                os.link(self._config.vm_kernel, kernel_dest)
+                try:
+                    os.link(self._config.vm_kernel, kernel_dest)
+                except OSError:
+                    logger.warning(
+                        "Hard-link of kernel image failed (cross-device or permission error); "
+                        "falling back to copy: %s -> %s",
+                        self._config.vm_kernel,
+                        kernel_dest,
+                    )
+                    shutil.copy2(self._config.vm_kernel, kernel_dest)
             overlay_dest = os.path.join(jail_path, "overlay.ext4")
             # Use cp --reflink=auto for CoW on supported filesystems (btrfs, xfs)
             await self._run_subprocess("cp", "--reflink=auto", self._config.vm_rootfs, overlay_dest)
