@@ -46,7 +46,7 @@ class TestVMStateExhaustiveTransitions:
         ],
     )
     def test_transition_matrix(self, from_state, to_state, valid):
-        assert VMState(from_state).can_transition_to(to_state) == valid
+        assert from_state.can_transition_to(to_state) == valid
 
     @pytest.mark.parametrize(
         "from_state,to_state",
