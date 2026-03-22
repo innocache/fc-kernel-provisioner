@@ -1,6 +1,16 @@
 # Remote Integration Testing & Production Deployment — Implementation Plan
 
-> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [x]`) syntax for tracking.
+
+**Status:** All tasks complete. Implemented in PR #26 (merged).
+
+| Chunk | Status | PR |
+|-------|--------|----|
+| 1: Config File Restructuring (Tasks 1-3) | DONE | #26 |
+| 2: Remote Integration Test Script (Task 4) | DONE | #26 |
+| 3: Production Deployment Script (Task 5) | DONE | #26 |
+| 4: Documentation (Tasks 6-7) | DONE | #26 |
+| 5: Final Verification (Task 8) | DONE | #26 |
 
 **Goal:** Two independent shell scripts — `remote-test.sh` for one-command remote integration testing on a KVM host, and `deploy.sh` for production deployment lifecycle management via systemd.
 
@@ -24,14 +34,14 @@ Move `config/kernel.json` into a dedicated `config/kernelspec/` subdirectory so 
 - Create: `config/kernelspec/kernel.json` (moved from `config/kernel.json`)
 - Delete: `config/kernel.json`
 
-- [ ] **Step 1: Create the kernelspec directory and move the file**
+- [x] **Step 1: Create the kernelspec directory and move the file**
 
 ```bash
 mkdir -p config/kernelspec
 git mv config/kernel.json config/kernelspec/kernel.json
 ```
 
-- [ ] **Step 2: Update README.md references**
+- [x] **Step 2: Update README.md references**
 
 In `README.md`, change the kernelspec install command from:
 ```bash
@@ -44,7 +54,7 @@ uv run jupyter kernelspec install config/kernelspec/ --name python3-firecracker 
 
 Also update the Architecture tree — change `config/kernel.json` to `config/kernelspec/kernel.json` (with the `kernelspec/` subdirectory).
 
-- [ ] **Step 3: Update docs/testing.md references**
+- [x] **Step 3: Update docs/testing.md references**
 
 In `docs/testing.md`, change:
 ```bash
@@ -59,7 +69,7 @@ uv run jupyter kernelspec install config/kernelspec/ \
     --user
 ```
 
-- [ ] **Step 4: Verify no other files reference the old path**
+- [x] **Step 4: Verify no other files reference the old path**
 
 ```bash
 grep -r "kernelspec install config/" --include="*.sh" --include="*.md" --include="*.py" --include="*.service" .
@@ -67,7 +77,7 @@ grep -r "kernelspec install config/" --include="*.sh" --include="*.md" --include
 
 Should return zero matches for `config/` (all should now reference `config/kernelspec/`).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add config/kernelspec/kernel.json README.md docs/testing.md
@@ -86,7 +96,7 @@ Update the existing systemd unit to use `uv run` instead of bare `/usr/bin/pytho
 **Files:**
 - Modify: `config/fc-pool-manager.service`
 
-- [ ] **Step 1: Update ExecStart and add WorkingDirectory**
+- [x] **Step 1: Update ExecStart and add WorkingDirectory**
 
 Replace the current content of `config/fc-pool-manager.service` with:
 
@@ -115,7 +125,7 @@ Changes from original:
 - `ExecStart`: Added `--socket /var/run/fc-pool.sock` (explicit socket path)
 - Added: `WorkingDirectory=/opt/fc-kernel-provisioner` (so `uv` finds `.venv`)
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add config/fc-pool-manager.service
@@ -134,7 +144,7 @@ Create a new systemd unit for the Jupyter Kernel Gateway, which depends on the p
 **Files:**
 - Create: `config/fc-kernel-gateway.service`
 
-- [ ] **Step 1: Create the service file**
+- [x] **Step 1: Create the service file**
 
 Create `config/fc-kernel-gateway.service`:
 
@@ -165,7 +175,7 @@ Key points:
 - `ExecStartPre` installs kernelspec with `--sys-prefix` (into active Python env, not root's home)
 - `WorkingDirectory` matches pool manager — both use the symlink at `/opt/fc-kernel-provisioner`
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add config/fc-kernel-gateway.service
@@ -186,7 +196,7 @@ One-command remote integration test runner: syncs code, sets up environment, run
 **Files:**
 - Create: `scripts/remote-test.sh`
 
-- [ ] **Step 1: Create the script with argument parsing and help text**
+- [x] **Step 1: Create the script with argument parsing and help text**
 
 Create `scripts/remote-test.sh`:
 
@@ -476,13 +486,13 @@ fi
 exit 0  # Triggers trap → teardown → exit $TEST_RC
 ```
 
-- [ ] **Step 2: Make the script executable**
+- [x] **Step 2: Make the script executable**
 
 ```bash
 chmod +x scripts/remote-test.sh
 ```
 
-- [ ] **Step 3: Run shellcheck**
+- [x] **Step 3: Run shellcheck**
 
 ```bash
 shellcheck scripts/remote-test.sh
@@ -490,7 +500,7 @@ shellcheck scripts/remote-test.sh
 
 Fix any issues found.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add scripts/remote-test.sh
@@ -513,7 +523,7 @@ Production lifecycle manager with deploy, update, stop, start, restart, status, 
 **Files:**
 - Create: `scripts/deploy.sh`
 
-- [ ] **Step 1: Create the script with argument parsing and common functions**
+- [x] **Step 1: Create the script with argument parsing and common functions**
 
 Create `scripts/deploy.sh`:
 
@@ -847,13 +857,13 @@ case "$COMMAND" in
 esac
 ```
 
-- [ ] **Step 2: Make the script executable**
+- [x] **Step 2: Make the script executable**
 
 ```bash
 chmod +x scripts/deploy.sh
 ```
 
-- [ ] **Step 3: Run shellcheck**
+- [x] **Step 3: Run shellcheck**
 
 ```bash
 shellcheck scripts/deploy.sh
@@ -861,7 +871,7 @@ shellcheck scripts/deploy.sh
 
 Fix any issues found.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add scripts/deploy.sh
@@ -884,7 +894,7 @@ Add sections for remote integration testing and production deployment.
 **Files:**
 - Modify: `docs/testing.md`
 
-- [ ] **Step 1: Add Remote Integration Testing section**
+- [x] **Step 1: Add Remote Integration Testing section**
 
 After the "CI Considerations" section (end of the file), add:
 
@@ -1044,11 +1054,11 @@ sudo journalctl -u fc-pool-manager -u fc-kernel-gateway -f
 **Confirmation required** — you must type `yes` to proceed.
 ```
 
-- [ ] **Step 2: Verify the markdown renders correctly**
+- [x] **Step 2: Verify the markdown renders correctly**
 
 Review the file to ensure no formatting issues with nested code blocks.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/testing.md
@@ -1068,7 +1078,7 @@ Add brief mentions of remote testing and deployment in the README.
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Add remote testing and deployment to the Testing section**
+- [x] **Step 1: Add remote testing and deployment to the Testing section**
 
 After the existing test commands in the Testing section, add:
 
@@ -1086,7 +1096,7 @@ After the existing test commands in the Testing section, add:
 See [docs/testing.md](docs/testing.md) for full details.
 ```
 
-- [ ] **Step 2: Update the Architecture tree**
+- [x] **Step 2: Update the Architecture tree**
 
 In the `scripts/` section of the Architecture tree, add the new scripts:
 
@@ -1110,7 +1120,7 @@ In the `config/` section, update to show the kernelspec directory and new servic
 │   └── setup_network.sh           # Host bridge + NAT setup
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add README.md
@@ -1125,7 +1135,7 @@ git commit -m "docs: add remote testing and deployment to README"
 
 Verify all files are in place, scripts are executable, and no broken references.
 
-- [ ] **Step 1: Verify file structure**
+- [x] **Step 1: Verify file structure**
 
 ```bash
 ls -la scripts/remote-test.sh scripts/deploy.sh
@@ -1135,7 +1145,7 @@ ls -la config/kernelspec/kernel.json
 
 All scripts should be executable (`-rwxr-xr-x`). The old `config/kernel.json` should not exist.
 
-- [ ] **Step 2: Verify no broken references to old kernel.json path**
+- [x] **Step 2: Verify no broken references to old kernel.json path**
 
 ```bash
 grep -r "kernelspec install config/" --include="*.sh" --include="*.md" --include="*.py" --include="*.service" .
@@ -1144,7 +1154,7 @@ grep -r "config/kernel\.json" --include="*.sh" --include="*.md" --include="*.py"
 
 Both should return no matches (or only reference the new `config/kernelspec/` path).
 
-- [ ] **Step 3: Run shellcheck on both scripts**
+- [x] **Step 3: Run shellcheck on both scripts**
 
 ```bash
 shellcheck scripts/remote-test.sh scripts/deploy.sh
@@ -1152,7 +1162,7 @@ shellcheck scripts/remote-test.sh scripts/deploy.sh
 
 Should pass with no errors.
 
-- [ ] **Step 4: Run unit tests to verify nothing is broken**
+- [x] **Step 4: Run unit tests to verify nothing is broken**
 
 ```bash
 uv run pytest tests/ -v -m "not integration" --tb=short
@@ -1160,7 +1170,7 @@ uv run pytest tests/ -v -m "not integration" --tb=short
 
 All tests should pass (the config restructuring doesn't affect unit tests).
 
-- [ ] **Step 5: Final commit if any fixes were needed**
+- [x] **Step 5: Final commit if any fixes were needed**
 
 Only if previous steps required fixes:
 
