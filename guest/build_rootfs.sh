@@ -48,7 +48,7 @@ cleanup() {
     if mountpoint -q "${MOUNT_DIR:-/nonexistent}" 2>/dev/null; then
         umount "$MOUNT_DIR"
     fi
-    rm -rf "$ROOTFS_DIR" "${MOUNT_DIR:-}"
+    rm -rf "$ROOTFS_DIR" "${MOUNT_DIR:-}" "${APK_STATIC_DIR:-}"
 }
 trap cleanup EXIT
 
@@ -60,10 +60,11 @@ if ! command -v apk &>/dev/null; then
     APK_TAR="$APK_STATIC_DIR/apk-tools-static.apk"
     curl -sSL "${ALPINE_MIRROR}/v${ALPINE_VERSION}/main/x86_64/APKINDEX.tar.gz" \
         -o "$APK_STATIC_DIR/APKINDEX.tar.gz"
-    # Find the apk-tools-static package filename from the index
-    APK_STATIC_PKG=$(tar -xzf "$APK_STATIC_DIR/APKINDEX.tar.gz" -O APKINDEX 2>/dev/null \
-        | awk '/^P:apk-tools-static/{found=1} found && /^V:/{print $0; exit}' \
-        | cut -d: -f2)
+    # Find the apk-tools-static package version from the index
+    # Extract to file first (piping tar | awk fails with pipefail due to SIGPIPE)
+    tar -xzf "$APK_STATIC_DIR/APKINDEX.tar.gz" -C "$APK_STATIC_DIR" APKINDEX
+    APK_STATIC_PKG=$(awk '/^P:apk-tools-static/{found=1} found && /^V:/{print; exit}' \
+        "$APK_STATIC_DIR/APKINDEX" | cut -d: -f2)
     curl -sSL "${ALPINE_MIRROR}/v${ALPINE_VERSION}/main/x86_64/apk-tools-static-${APK_STATIC_PKG}.apk" \
         -o "$APK_TAR"
     tar -xzf "$APK_TAR" -C "$APK_STATIC_DIR" sbin/apk.static 2>/dev/null
