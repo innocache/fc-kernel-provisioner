@@ -61,6 +61,16 @@ class TestHandleMessageEdgeCases:
         response = _decode(mod.handle_message(_encode(msg)))
         assert response["status"] == "error"
 
+    def test_oversized_message_returns_error(self):
+        """Message exceeding MAX_MESSAGE_SIZE should return error."""
+        mod = self._get_fresh_mod()
+        # Craft a header that declares a payload larger than MAX_MESSAGE_SIZE
+        huge_length = mod.MAX_MESSAGE_SIZE + 1
+        data = struct.pack(HEADER_FMT, huge_length) + b"{}"
+        response = _decode(mod.handle_message(data))
+        assert response["status"] == "error"
+        assert "too large" in response["message"]
+
     def test_start_kernel_crash_on_launch(self):
         """Kernel process that exits immediately should return error."""
         mod = self._get_fresh_mod()

@@ -13,7 +13,10 @@ class TestVMState:
 
     def test_invalid_transition(self):
         assert not VMState.IDLE.can_transition_to(VMState.BOOTING)
-        assert not VMState.ASSIGNED.can_transition_to(VMState.IDLE)
+        assert not VMState.STOPPING.can_transition_to(VMState.IDLE)
+
+    def test_assigned_to_idle_valid_for_recycle(self):
+        assert VMState.ASSIGNED.can_transition_to(VMState.IDLE)
 
 
 class TestCIDAllocator:

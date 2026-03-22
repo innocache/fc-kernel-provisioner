@@ -5,8 +5,11 @@ NetworkManager handles TAP creation/teardown via subprocess calls to `ip`.
 """
 
 import asyncio
+import logging
 import subprocess
 from typing import Protocol
+
+logger = logging.getLogger(__name__)
 
 
 class IPAllocatorProtocol(Protocol):
@@ -79,8 +82,8 @@ class NetworkManager:
         """Delete a TAP device (auto-detaches from bridge)."""
         try:
             await self._run("ip", "link", "del", tap_name)
-        except subprocess.CalledProcessError:
-            pass
+        except subprocess.CalledProcessError as exc:
+            logger.warning("Failed to delete TAP %s: %s", tap_name, exc)
 
     async def _run(self, *cmd: str) -> None:
         proc = await asyncio.create_subprocess_exec(

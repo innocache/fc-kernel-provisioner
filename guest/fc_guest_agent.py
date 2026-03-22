@@ -20,6 +20,7 @@ import time
 VSOCK_PORT = 52
 VSOCK_CID_ANY = 0xFFFFFFFF
 HEADER_FMT = "!I"
+MAX_MESSAGE_SIZE = 1 * 1024 * 1024  # 1 MiB
 
 kernel_proc = None
 boot_time = time.monotonic()
@@ -106,6 +107,8 @@ def _encode_response(obj: dict) -> bytes:
 def _decode_message(data: bytes) -> dict:
     header_size = struct.calcsize(HEADER_FMT)
     length = struct.unpack(HEADER_FMT, data[:header_size])[0]
+    if length > MAX_MESSAGE_SIZE:
+        raise ValueError(f"message too large: {length} bytes (max {MAX_MESSAGE_SIZE})")
     return json.loads(data[header_size: header_size + length])
 
 
@@ -168,6 +171,10 @@ def main() -> None:  # pragma: no cover
             try:
                 header = recv_exactly(conn, header_size)
                 (length,) = struct.unpack(HEADER_FMT, header)
+                if length > MAX_MESSAGE_SIZE:
+                    err = _encode_response({"status": "error", "message": f"message too large: {length}"})
+                    conn.sendall(err)
+                    continue
                 body = recv_exactly(conn, length)
                 raw = header + body
                 response = handle_message(raw)

@@ -122,6 +122,27 @@ class TestAcquireEdgeCases:
         with pytest.raises(RuntimeError, match="pool_exhausted"):
             await manager.acquire(vcpu=1, mem_mib=512)
 
+    async def test_concurrent_acquires_no_double_assign(self, tmp_path):
+        """Two concurrent acquires with one idle VM should not double-assign."""
+        config = make_test_config(tmp_path, pool={"size": 1, "max_vms": 1})
+        mgr = PoolManager(config)
+        mgr._boot_vm = AsyncMock(return_value=None)
+        mgr._destroy_vm = AsyncMock(return_value=None)
+
+        vm = make_vm()
+        mgr._vms["vm-test1234"] = vm
+
+        results = await asyncio.gather(
+            mgr.acquire(vcpu=1, mem_mib=512),
+            mgr.acquire(vcpu=1, mem_mib=512),
+            return_exceptions=True,
+        )
+        successes = [r for r in results if not isinstance(r, Exception)]
+        errors = [r for r in results if isinstance(r, Exception)]
+        assert len(successes) == 1
+        assert len(errors) == 1
+        assert "pool_exhausted" in str(errors[0])
+
 
 class TestReleaseEdgeCases:
     @pytest.fixture
@@ -155,16 +176,25 @@ class TestReleaseEdgeCases:
         assert "vm-test1234" not in manager._vms
         manager._destroy_vm.assert_awaited_once()
 
-    async def test_release_destroy_false_assigned_to_idle_invalid(self, manager):
-        """Using destroy=False on an ASSIGNED VM (attempting ASSIGNED -> IDLE) raises."""
+    async def test_release_destroy_false_recycles_to_idle(self, manager):
+        """Release with destroy=False should transition ASSIGNED -> IDLE."""
         vm = make_vm(state=VMState.ASSIGNED)
         manager._vms["vm-test1234"] = vm
-        # destroy=False tries vsock reset then attempts to transition to IDLE
-        # ASSIGNED -> IDLE is not a valid transition, so this should raise
+        with patch("fc_pool_manager.vsock.vsock_request", new_callable=AsyncMock) as mock_vsock:
+            mock_vsock.return_value = {"status": "ok"}
+            await manager.release("vm-test1234", destroy=False)
+        assert vm.state == VMState.IDLE
+        assert "vm-test1234" in manager._vms  # Still in pool
+        manager._destroy_vm.assert_not_awaited()
+
+    async def test_release_destroy_false_reset_failure_still_recycles(self, manager):
+        """Even if vsock reset fails, VM should still transition to IDLE."""
+        vm = make_vm(state=VMState.ASSIGNED)
+        manager._vms["vm-test1234"] = vm
         with patch("fc_pool_manager.vsock.vsock_request", new_callable=AsyncMock) as mock_vsock:
             mock_vsock.side_effect = ConnectionError("no VM")
-            with pytest.raises(ValueError, match="Invalid state transition"):
-                await manager.release("vm-test1234", destroy=False)
+            await manager.release("vm-test1234", destroy=False)
+        assert vm.state == VMState.IDLE
 
 
 class TestPoolStatus:

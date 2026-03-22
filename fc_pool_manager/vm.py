@@ -19,13 +19,19 @@ class VMState(Enum):
 _VALID_TRANSITIONS = {
     VMState.BOOTING: {VMState.IDLE, VMState.STOPPING},
     VMState.IDLE: {VMState.ASSIGNED, VMState.STOPPING},
-    VMState.ASSIGNED: {VMState.STOPPING},
+    VMState.ASSIGNED: {VMState.IDLE, VMState.STOPPING},
     VMState.STOPPING: set(),
 }
 
 
 class CIDAllocator:
-    """Allocates unique vsock CIDs starting at 3 (0-2 are reserved)."""
+    """Allocates unique vsock CIDs starting at 3 (0-2 are reserved).
+
+    The vsock CID space is a 32-bit unsigned integer. CIDs 0, 1, and 2
+    are reserved by the kernel, so the valid range is [3, 2^32 - 1).
+    """
+
+    MAX_CID = (1 << 32) - 1  # 4294967295
 
     def __init__(self, start: int = 3):
         self._next = start
@@ -36,6 +42,8 @@ class CIDAllocator:
         if self._free:
             cid = self._free.pop(0)
         else:
+            if self._next >= self.MAX_CID:
+                raise RuntimeError("CID space exhausted")
             cid = self._next
             self._next += 1
         self._allocated.add(cid)

@@ -36,8 +36,8 @@ class TestVMStateExhaustiveTransitions:
             (VMState.IDLE, VMState.IDLE, False),
             # From ASSIGNED
             (VMState.ASSIGNED, VMState.STOPPING, True),
+            (VMState.ASSIGNED, VMState.IDLE, True),
             (VMState.ASSIGNED, VMState.BOOTING, False),
-            (VMState.ASSIGNED, VMState.IDLE, False),
             (VMState.ASSIGNED, VMState.ASSIGNED, False),
             # From STOPPING — terminal state, no transitions
             (VMState.STOPPING, VMState.BOOTING, False),
@@ -53,7 +53,6 @@ class TestVMStateExhaustiveTransitions:
         "from_state,to_state",
         [
             (VMState.BOOTING, VMState.ASSIGNED),
-            (VMState.ASSIGNED, VMState.IDLE),
             (VMState.STOPPING, VMState.IDLE),
             (VMState.STOPPING, VMState.BOOTING),
         ],
@@ -147,6 +146,21 @@ class TestCIDAllocatorEdgeCases:
         alloc.release(c1)
         assert c1 not in alloc._allocated
         assert c2 in alloc._allocated
+
+    def test_max_cid_boundary(self):
+        """Allocating beyond MAX_CID should raise RuntimeError."""
+        alloc = CIDAllocator(start=CIDAllocator.MAX_CID - 1)
+        alloc.allocate()  # MAX_CID - 1, ok
+        with pytest.raises(RuntimeError, match="CID space exhausted"):
+            alloc.allocate()  # MAX_CID, should fail
+
+    def test_recycled_cid_bypasses_max_check(self):
+        """Released CIDs can be reused even when _next is at MAX_CID."""
+        alloc = CIDAllocator(start=CIDAllocator.MAX_CID - 1)
+        cid = alloc.allocate()  # MAX_CID - 1
+        alloc.release(cid)
+        reused = alloc.allocate()  # Should reuse, not mint new
+        assert reused == cid
 
 
 class TestVMInstanceEdgeCases:
