@@ -1,0 +1,25 @@
+pool:
+  size: 5
+  max_vms: 30
+  replenish_threshold: 2
+  health_check_interval: 30
+
+vm_defaults:
+  vcpu: 1
+  mem_mib: 512
+  kernel: /opt/firecracker/vmlinux
+  rootfs: /opt/firecracker/rootfs.ext4
+  boot_args_template: "console=ttyS0 reboot=k panic=1 pci=off ip={vm_ip}::172.16.0.1:255.255.255.0::eth0:off init=/init"
+
+network:
+  bridge: fcbr0
+  subnet: "172.16.0.0/24"
+  gateway: "172.16.0.1"
+  vm_ip_start: 2
+
+jailer:
+  enabled: true
+  chroot_base: /srv/jailer
+  exec_path: /usr/bin/firecracker
+  uid: 123
+  gid: 100
