@@ -154,11 +154,11 @@ class TestReleaseEdgeCases:
         assert "vm-test1234" not in manager._vms
         manager._destroy_vm.assert_awaited_once()
 
-    async def test_release_destroy_false_not_supported_for_idle(self, manager):
-        """Release with destroy=False on ASSIGNED VM transitions to IDLE."""
+    async def test_release_destroy_false_assigned_to_idle_invalid(self, manager):
+        """Using destroy=False on an ASSIGNED VM (attempting ASSIGNED -> IDLE) raises."""
         vm = make_vm(state=VMState.ASSIGNED)
         manager._vms["vm-test1234"] = vm
-        # destroy=False tries vsock reset then transitions to IDLE
+        # destroy=False tries vsock reset then attempts to transition to IDLE
         # ASSIGNED -> IDLE is not a valid transition, so this should raise
         with patch("fc_pool_manager.vsock.vsock_request", new_callable=AsyncMock) as mock_vsock:
             mock_vsock.side_effect = ConnectionError("no VM")
