@@ -1,0 +1,15 @@
+{
+    "display_name": "Python 3 (Firecracker)",
+    "language": "python",
+    "argv": [],
+    "metadata": {
+        "kernel_provisioner": {
+            "provisioner_name": "firecracker-provisioner",
+            "config": {
+                "pool_socket": "/var/run/fc-pool.sock",
+                "vcpu_count": 1,
+                "mem_size_mib": 512
+            }
+        }
+    }
+}
