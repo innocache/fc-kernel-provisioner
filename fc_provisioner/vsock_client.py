@@ -10,12 +10,15 @@ connection. vsock_request() sends AND receives on a single connection.
 
 import asyncio
 import json
+import logging
 import struct
 from typing import Any
 
 GUEST_AGENT_PORT = 52
 HEADER_FMT = "!I"
 HEADER_SIZE = struct.calcsize(HEADER_FMT)
+
+logger = logging.getLogger(__name__)
 
 
 def _encode_message(msg: dict[str, Any]) -> bytes:
@@ -76,8 +79,8 @@ async def vsock_send_only(
         await _handshake(reader, writer)
         writer.write(_encode_message(msg))
         await writer.drain()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("vsock_send_only failed (path=%s): %s", vsock_uds_path, exc)
     finally:
         writer.close()
         await writer.wait_closed()

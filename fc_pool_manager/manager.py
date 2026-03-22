@@ -28,6 +28,7 @@ class PoolManager:
         )
         self._cid_alloc = CIDAllocator()
         self._boot_lock = asyncio.Lock()
+        self._pool_lock = asyncio.Lock()
 
     @property
     def idle_count(self) -> int:
@@ -55,24 +56,26 @@ class PoolManager:
                 f"(vcpu={self._config.vm_vcpu}, mem_mib={self._config.vm_mem_mib})"
             )
 
-        for vm in self._vms.values():
-            if vm.state == VMState.IDLE:
-                vm.transition_to(VMState.ASSIGNED)
-                logger.info("Acquired VM %s (ip=%s)", vm.vm_id, vm.ip)
-                asyncio.create_task(self.replenish())  # backfill pool
-                return {
-                    "id": vm.vm_id,
-                    "ip": vm.ip,
-                    "vsock_path": vm.vsock_path,
-                }
+        async with self._pool_lock:
+            for vm in self._vms.values():
+                if vm.state == VMState.IDLE:
+                    vm.transition_to(VMState.ASSIGNED)
+                    logger.info("Acquired VM %s (ip=%s)", vm.vm_id, vm.ip)
+                    asyncio.create_task(self.replenish())  # backfill pool
+                    return {
+                        "id": vm.vm_id,
+                        "ip": vm.ip,
+                        "vsock_path": vm.vsock_path,
+                    }
 
-        if self.total_count >= self._config.max_vms:
-            raise RuntimeError("pool_exhausted")
+            if self.total_count >= self._config.max_vms:
+                raise RuntimeError("pool_exhausted")
 
         # No idle VMs but under max — boot one on demand
         logger.info("No idle VMs, booting on demand")
         vm = await self._boot_vm()
-        vm.transition_to(VMState.ASSIGNED)
+        async with self._pool_lock:
+            vm.transition_to(VMState.ASSIGNED)
         return {
             "id": vm.vm_id,
             "ip": vm.ip,
@@ -87,9 +90,11 @@ class PoolManager:
             return
 
         if destroy:
-            vm.transition_to(VMState.STOPPING)
+            async with self._pool_lock:
+                vm.transition_to(VMState.STOPPING)
             await self._destroy_vm(vm)
-            del self._vms[vm_id]
+            async with self._pool_lock:
+                del self._vms[vm_id]
             logger.info("Destroyed VM %s", vm_id)
         else:
             # Best-effort reset/stop of the guest before returning to the idle pool.
@@ -102,9 +107,9 @@ class PoolManager:
                     vm_id,
                     exc,
                 )
-            vm.transition_to(VMState.IDLE)
+            async with self._pool_lock:
+                vm.transition_to(VMState.IDLE)
             logger.info("Released VM %s back to idle pool", vm_id)
-
     async def is_alive(self, vm_id: str) -> dict[str, Any]:
         """Check if a VM is alive by pinging the guest agent."""
         vm = self._vms.get(vm_id)
@@ -147,7 +152,10 @@ class PoolManager:
             os.makedirs(jail_path, exist_ok=True)
             kernel_dest = os.path.join(jail_path, "vmlinux")
             if not os.path.exists(kernel_dest):
-                os.link(self._config.vm_kernel, kernel_dest)
+                try:
+                    os.link(self._config.vm_kernel, kernel_dest)
+                except OSError:
+                    shutil.copy2(self._config.vm_kernel, kernel_dest)
             overlay_dest = os.path.join(jail_path, "overlay.ext4")
             # Use cp --reflink=auto for CoW on supported filesystems (btrfs, xfs)
             await self._run_subprocess("cp", "--reflink=auto", self._config.vm_rootfs, overlay_dest)
@@ -211,8 +219,14 @@ class PoolManager:
             await asyncio.to_thread(shutil.rmtree, vm.jail_path, ignore_errors=True)
 
     async def replenish(self) -> None:
-        """Boot VMs until idle count meets pool_size."""
+        """Boot VMs until idle count meets pool_size.
+
+        Replenishment is triggered when idle count drops below replenish_threshold
+        and continues until the pool_size target is reached.
+        """
         async with self._boot_lock:
+            if self.idle_count >= self._config.replenish_threshold:
+                return
             while (
                 self.idle_count < self._config.pool_size
                 and self.total_count < self._config.max_vms

@@ -136,6 +136,17 @@ def handle_message(data: bytes) -> bytes:
 # Main — AF_VSOCK listener loop (not exercised by unit tests)
 # ---------------------------------------------------------------------------
 
+def _recv_exactly(conn: socket.socket, n: int) -> bytes:
+    """Read exactly *n* bytes from *conn*, looping until all bytes arrive."""
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = conn.recv(n - len(buf))
+        if not chunk:
+            raise ConnectionError(f"Connection closed after {len(buf)}/{n} bytes")
+        buf.extend(chunk)
+    return bytes(buf)
+
+
 def main() -> None:  # pragma: no cover
     """Listen on AF_VSOCK and handle incoming messages."""
     srv = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
@@ -149,11 +160,9 @@ def main() -> None:  # pragma: no cover
         conn, addr = srv.accept()
         with conn:
             try:
-                header = conn.recv(header_size)
-                if len(header) < header_size:
-                    continue
+                header = _recv_exactly(conn, header_size)
                 (length,) = struct.unpack(HEADER_FMT, header)
-                body = conn.recv(length)
+                body = _recv_exactly(conn, length)
                 raw = header + body
                 response = handle_message(raw)
                 conn.sendall(response)
