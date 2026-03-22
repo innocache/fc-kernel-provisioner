@@ -30,3 +30,6 @@ packages = ["fc_provisioner", "fc_pool_manager"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: requires running pool manager and Kernel Gateway (deselect with '-m not integration')",
+]
