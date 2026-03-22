@@ -99,3 +99,70 @@ class TestPoolManagerAcquireRelease:
                 vm_id=f"vm-{i:08x}", ip=f"172.16.0.{i+2}", cid=i+3
             )
         assert manager.idle_count == 3
+
+
+class TestPoolManagerReplenishThreshold:
+    """replenish_threshold gates when background booting is triggered."""
+
+    @pytest.fixture
+    def manager(self, tmp_path):
+        config = make_test_config(tmp_path)  # pool_size=2, replenish_threshold=1
+        mgr = PoolManager(config)
+        mgr._boot_vm = AsyncMock(return_value=None)
+        mgr._destroy_vm = AsyncMock(return_value=None)
+        return mgr
+
+    async def test_replenish_skipped_when_idle_at_or_above_threshold(self, manager):
+        """No booting should happen when idle_count >= replenish_threshold."""
+        # threshold=1, so 1 idle VM means no replenishment needed
+        manager._vms["vm-test1234"] = make_idle_vm()
+        assert manager.idle_count == 1  # equals threshold
+
+        await manager.replenish()
+        manager._boot_vm.assert_not_awaited()
+
+    async def test_replenish_boots_to_pool_size_when_below_threshold(self, manager):
+        """When idle_count < replenish_threshold, boot VMs until idle reaches pool_size."""
+        # threshold=1, pool_size=2; empty pool should trigger booting
+        assert manager.idle_count == 0  # below threshold of 1
+
+        booted_vms = []
+
+        async def fake_boot():
+            i = len(booted_vms)
+            vm = make_idle_vm(vm_id=f"vm-{i:08x}", ip=f"172.16.0.{i+2}", cid=i+3)
+            manager._vms[vm.vm_id] = vm
+            booted_vms.append(vm)
+
+        manager._boot_vm = AsyncMock(side_effect=fake_boot)
+        await manager.replenish()
+
+        # Should have booted exactly pool_size=2 VMs
+        assert len(booted_vms) == 2
+        assert manager.idle_count == 2
+
+    async def test_acquire_triggers_replenish_below_threshold(self, manager):
+        """Acquiring the last VM (idle drops below threshold) should trigger replenish."""
+        # Start with 1 idle VM (= threshold=1); after acquire idle=0 < threshold
+        vm = make_idle_vm()
+        manager._vms["vm-test1234"] = vm
+
+        booted_vms = []
+
+        async def fake_boot():
+            i = len(booted_vms)
+            new_vm = make_idle_vm(vm_id=f"vm-{i:08x}", ip=f"172.16.0.{i+10}", cid=i+10)
+            manager._vms[new_vm.vm_id] = new_vm
+            booted_vms.append(new_vm)
+
+        manager._boot_vm = AsyncMock(side_effect=fake_boot)
+
+        result = await manager.acquire(vcpu=1, mem_mib=512)
+        assert result["id"] == "vm-test1234"
+
+        # Yield to the event loop so the background replenish task can execute
+        import asyncio as _asyncio
+        await _asyncio.sleep(0)
+
+        # idle is now 0 < threshold=1, so replenish fired and booted up to pool_size=2
+        assert manager._boot_vm.await_count >= 1
