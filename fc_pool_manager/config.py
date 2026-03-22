@@ -10,7 +10,6 @@ class PoolConfig:
 
     pool_size: int
     max_vms: int
-    replenish_threshold: int
     health_check_interval: int
 
     vm_vcpu: int
@@ -43,8 +42,7 @@ class PoolConfig:
         return cls(
             pool_size=pool["size"],
             max_vms=pool["max_vms"],
-            replenish_threshold=pool["replenish_threshold"],
-            health_check_interval=pool["health_check_interval"],
+            health_check_interval=pool.get("health_check_interval", 30),
             vm_vcpu=vm["vcpu"],
             vm_mem_mib=vm["mem_mib"],
             vm_kernel=vm["kernel"],

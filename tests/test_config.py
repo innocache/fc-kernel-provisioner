@@ -10,7 +10,6 @@ class TestPoolConfig:
 pool:
   size: 3
   max_vms: 10
-  replenish_threshold: 1
   health_check_interval: 15
 
 vm_defaults:
@@ -40,7 +39,6 @@ jailer:
 
         assert cfg.pool_size == 3
         assert cfg.max_vms == 10
-        assert cfg.replenish_threshold == 1
         assert cfg.health_check_interval == 15
         assert cfg.vm_vcpu == 2
         assert cfg.vm_mem_mib == 1024

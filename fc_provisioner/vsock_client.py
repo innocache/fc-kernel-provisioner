@@ -16,6 +16,7 @@ from typing import Any
 GUEST_AGENT_PORT = 52
 HEADER_FMT = "!I"
 HEADER_SIZE = struct.calcsize(HEADER_FMT)
+MAX_MESSAGE_SIZE = 1 * 1024 * 1024  # 1 MiB
 
 
 def _encode_message(msg: dict[str, Any]) -> bytes:
@@ -59,6 +60,8 @@ async def vsock_request(
 
         header = await asyncio.wait_for(reader.readexactly(HEADER_SIZE), timeout=timeout)
         length = struct.unpack(HEADER_FMT, header)[0]
+        if length > MAX_MESSAGE_SIZE:
+            raise ValueError(f"Response too large: {length} bytes (max {MAX_MESSAGE_SIZE})")
         payload = await asyncio.wait_for(reader.readexactly(length), timeout=timeout)
         return json.loads(payload)
     finally:
@@ -71,13 +74,15 @@ async def vsock_send_only(
     msg: dict[str, Any],
 ) -> None:
     """Send a fire-and-forget message (e.g., signal)."""
-    reader, writer = await asyncio.open_unix_connection(vsock_uds_path)
+    writer = None
     try:
+        reader, writer = await asyncio.open_unix_connection(vsock_uds_path)
         await _handshake(reader, writer)
         writer.write(_encode_message(msg))
         await writer.drain()
     except Exception:
         pass
     finally:
-        writer.close()
-        await writer.wait_closed()
+        if writer is not None:
+            writer.close()
+            await writer.wait_closed()

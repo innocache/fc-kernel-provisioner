@@ -14,7 +14,6 @@ VALID_CONFIG = """\
 pool:
   size: 5
   max_vms: 30
-  replenish_threshold: 2
   health_check_interval: 30
 vm_defaults:
   vcpu: 2
@@ -74,7 +73,6 @@ jailer:
 pool:
   size: 5
   max_vms: 30
-  replenish_threshold: 2
   health_check_interval: 30
 network:
   bridge: fcbr0
@@ -97,7 +95,6 @@ jailer:
 pool:
   size: 5
   max_vms: 30
-  replenish_threshold: 2
   health_check_interval: 30
 vm_defaults:
   vcpu: 1
@@ -121,7 +118,6 @@ jailer:
 pool:
   size: 5
   max_vms: 30
-  replenish_threshold: 2
   health_check_interval: 30
 vm_defaults:
   vcpu: 1
@@ -171,5 +167,5 @@ network:
         """boot_args_template should contain {vm_ip} placeholder."""
         path = write_config(tmp_path, VALID_CONFIG)
         config = PoolConfig.from_yaml(path)
-        formatted = config.boot_args_template.format(vm_ip="172.16.0.2")
+        formatted = config.boot_args_template.replace("{vm_ip}", "172.16.0.2")
         assert "172.16.0.2" in formatted

@@ -57,14 +57,14 @@ class TestServerEdgeCases:
     async def test_release_with_destroy_false(self, client, mock_manager):
         """Release with destroy=False should pass through."""
         c = await client
-        resp = await c.post("/api/vms/vm-test/release", json={"destroy": False})
+        resp = await c.delete("/api/vms/vm-test", json={"destroy": False})
         assert resp.status == 200
         mock_manager.release.assert_awaited_once_with("vm-test", destroy=False)
 
     async def test_release_uses_destroy_true_default(self, client, mock_manager):
         """Release without explicit destroy should default to True."""
         c = await client
-        resp = await c.post("/api/vms/vm-test/release", json={})
+        resp = await c.delete("/api/vms/vm-test", json={})
         assert resp.status == 200
         mock_manager.release.assert_awaited_once_with("vm-test", destroy=True)
 

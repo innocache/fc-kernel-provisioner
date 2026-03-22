@@ -13,5 +13,10 @@ ip link set lo up
 # Just need to bring the link up
 ip link set eth0 up
 
-# Start guest agent as PID 1's child
-exec python3 /usr/local/bin/fc-guest-agent
+# Supervisor loop: restart guest agent if it crashes.
+# PID 1 must not exit or the kernel panics.
+while true; do
+    python3 /usr/local/bin/fc-guest-agent
+    echo "[init] guest agent exited ($?), restarting in 1s..." >&2
+    sleep 1
+done

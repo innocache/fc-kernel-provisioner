@@ -12,7 +12,6 @@ def make_test_config(tmp_path) -> PoolConfig:
 pool:
   size: 2
   max_vms: 5
-  replenish_threshold: 1
   health_check_interval: 30
 vm_defaults:
   vcpu: 1

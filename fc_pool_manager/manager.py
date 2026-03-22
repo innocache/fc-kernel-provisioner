@@ -3,8 +3,8 @@
 import asyncio
 import logging
 import os
+import secrets
 import shutil
-import uuid
 from typing import Any, Optional
 
 from .config import PoolConfig
@@ -60,7 +60,7 @@ class PoolManager:
             for vm in self._vms.values():
                 if vm.state == VMState.IDLE:
                     vm.transition_to(VMState.ASSIGNED)
-                    logger.info("Acquired VM %s (ip=%s)", vm.vm_id, vm.ip)
+                    logger.info("Acquired VM %s (ip=%s, cid=%d)", vm.vm_id, vm.ip, vm.cid)
                     asyncio.create_task(self.replenish())  # backfill pool
                     return {
                         "id": vm.vm_id,
@@ -89,7 +89,8 @@ class PoolManager:
             return
 
         if destroy:
-            vm.transition_to(VMState.STOPPING)
+            if vm.state != VMState.STOPPING:
+                vm.transition_to(VMState.STOPPING)
             await self._destroy_vm(vm)
             del self._vms[vm_id]
             logger.info("Destroyed VM %s", vm_id)
@@ -126,7 +127,7 @@ class PoolManager:
 
     async def _boot_vm(self) -> VMInstance:
         """Boot a new jailed Firecracker VM."""
-        short_id = uuid.uuid4().hex[:8]
+        short_id = secrets.token_hex(8)
         vm_id = f"vm-{short_id}"
         ip = self._network.allocate_ip()
         cid = self._cid_alloc.allocate()
@@ -156,7 +157,7 @@ class PoolManager:
 
             await self._network.create_tap(short_id)
 
-            boot_args = self._config.boot_args_template.format(vm_ip=ip)
+            boot_args = self._config.boot_args_template.replace("{vm_ip}", ip)
             jailer_cmd = [
                 "jailer", "--id", vm_id,
                 "--exec-file", self._config.firecracker_path,
@@ -204,6 +205,7 @@ class PoolManager:
                 await asyncio.wait_for(vm.jailer_process.wait(), timeout=5)
             except asyncio.TimeoutError:
                 vm.jailer_process.kill()
+                await vm.jailer_process.wait()
 
         await self._network.delete_tap(vm.tap_name)
         self._network.release_ip(vm.ip)
@@ -233,15 +235,16 @@ class PoolManager:
         """Periodically ping idle VMs and replace unhealthy ones."""
         while True:
             await asyncio.sleep(self._config.health_check_interval)
-            for vm in list(self._vms.values()):
-                if vm.state != VMState.IDLE:
-                    continue
-                health = await self.is_alive(vm.vm_id)
-                if not health["alive"]:
-                    logger.warning("VM %s unhealthy, replacing", vm.vm_id)
-                    vm.transition_to(VMState.STOPPING)
-                    await self._destroy_vm(vm)
-                    del self._vms[vm.vm_id]
+            async with self._acquire_lock:
+                for vm in list(self._vms.values()):
+                    if vm.state != VMState.IDLE:
+                        continue
+                    health = await self.is_alive(vm.vm_id)
+                    if not health["alive"]:
+                        logger.warning("VM %s unhealthy, replacing", vm.vm_id)
+                        vm.transition_to(VMState.STOPPING)
+                        await self._destroy_vm(vm)
+                        del self._vms[vm.vm_id]
             await self.replenish()
 
     async def shutdown(self) -> None:
@@ -269,8 +272,9 @@ class PoolManager:
 
     async def _wait_for_socket(self, path: str, timeout: float) -> None:
         """Wait for a Unix socket file to appear."""
-        deadline = asyncio.get_event_loop().time() + timeout
-        while asyncio.get_event_loop().time() < deadline:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
             if os.path.exists(path):
                 return
             await asyncio.sleep(0.1)
