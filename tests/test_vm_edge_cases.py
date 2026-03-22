@@ -14,6 +14,7 @@ def make_vm(vm_id="vm-test1234", state=VMState.BOOTING):
         mac="AA:FC:00:00:00:02",
         jail_path="/tmp/jail",
         vsock_path="/tmp/jail/v.sock",
+        state=state,
     )
 
 
