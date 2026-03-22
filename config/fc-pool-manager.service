@@ -1,0 +1,15 @@
+[Unit]
+Description=Firecracker VM Pool Manager
+After=network.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/bash /opt/fc-kernel-provisioner/config/setup_network.sh
+ExecStart=/usr/bin/python3 -m fc_pool_manager.server --config /opt/fc-kernel-provisioner/config/fc-pool.yaml
+Restart=on-failure
+RestartSec=5
+User=root
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
