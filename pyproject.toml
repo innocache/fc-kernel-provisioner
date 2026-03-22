@@ -19,6 +19,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-aiohttp>=1.0",
     "aioresponses>=0.7",
+    "jupyter_kernel_gateway>=3.0",
 ]
 
 [project.entry-points."jupyter_client.kernel_provisioners"]
