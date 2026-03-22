@@ -102,9 +102,20 @@ class PoolManager:
                 return
             vm.transition_to(VMState.STOPPING)
             del self._vms[vm_id]
-
-        await self._destroy_vm(vm)
-        logger.info("Destroyed VM %s", vm_id)
+            logger.info("Destroyed VM %s", vm_id)
+        else:
+            # Best-effort reset/stop of the guest before returning to the idle pool.
+            try:
+                from .vsock import vsock_request
+                await vsock_request(vm.vsock_path, {"action": "reset"}, timeout=10)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to reset guest for VM %s before releasing to idle pool: %s",
+                    vm_id,
+                    exc,
+                )
+            vm.transition_to(VMState.IDLE)
+            logger.info("Released VM %s back to idle pool", vm_id)
 
     async def is_alive(self, vm_id: str) -> dict[str, Any]:
         """Check if a VM is alive by pinging the guest agent."""
@@ -148,7 +159,16 @@ class PoolManager:
             os.makedirs(jail_path, exist_ok=True)
             kernel_dest = os.path.join(jail_path, "vmlinux")
             if not os.path.exists(kernel_dest):
-                os.link(self._config.vm_kernel, kernel_dest)
+                try:
+                    os.link(self._config.vm_kernel, kernel_dest)
+                except OSError:
+                    logger.warning(
+                        "Hard-link of kernel image failed (cross-device or permission error); "
+                        "falling back to copy: %s -> %s",
+                        self._config.vm_kernel,
+                        kernel_dest,
+                    )
+                    shutil.copy2(self._config.vm_kernel, kernel_dest)
             overlay_dest = os.path.join(jail_path, "overlay.ext4")
             # Use cp --reflink=auto for CoW on supported filesystems (btrfs, xfs)
             await self._run_subprocess("cp", "--reflink=auto", self._config.vm_rootfs, overlay_dest)

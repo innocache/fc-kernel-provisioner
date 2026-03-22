@@ -93,7 +93,7 @@ class FirecrackerProvisioner(KernelProvisionerBase):
 
         if resp.get("status") != "ready":
             raise RuntimeError(
-                f"Guest agent failed to start kernel: {resp.get('error', 'unknown')}"
+                f"Guest agent failed to start kernel: {resp.get('message', 'unknown')}"
             )
 
         self.connection_info["ip"] = self.vm_ip
