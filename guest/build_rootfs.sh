@@ -33,6 +33,15 @@ ROOTFS_DIR=$(mktemp -d)
 IMAGE=${1:-/opt/firecracker/rootfs.ext4}
 IMAGE_SIZE_MB=512
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+ALPINE_VERSION="3.19"
+ALPINE_MIRROR="https://dl-cdn.alpinelinux.org/alpine"
+
+# Skip rebuild if rootfs already exists
+if [[ -f "$IMAGE" ]]; then
+    echo "==> Rootfs already exists at $IMAGE ($(du -h "$IMAGE" | cut -f1)), skipping build"
+    echo "    To force rebuild: sudo rm $IMAGE && sudo $0"
+    exit 0
+fi
 
 cleanup() {
     echo "==> Cleaning up temp dirs"
@@ -43,12 +52,36 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Ensure apk is available (download static binary if not on Alpine)
+APK_BIN="apk"
+if ! command -v apk &>/dev/null; then
+    echo "==> apk not found, downloading apk-tools-static..."
+    APK_STATIC_DIR=$(mktemp -d)
+    APK_TAR="$APK_STATIC_DIR/apk-tools-static.apk"
+    curl -sSL "${ALPINE_MIRROR}/v${ALPINE_VERSION}/main/x86_64/APKINDEX.tar.gz" \
+        -o "$APK_STATIC_DIR/APKINDEX.tar.gz"
+    # Find the apk-tools-static package filename from the index
+    APK_STATIC_PKG=$(tar -xzf "$APK_STATIC_DIR/APKINDEX.tar.gz" -O APKINDEX 2>/dev/null \
+        | awk '/^P:apk-tools-static/{found=1} found && /^V:/{print $0; exit}' \
+        | cut -d: -f2)
+    curl -sSL "${ALPINE_MIRROR}/v${ALPINE_VERSION}/main/x86_64/apk-tools-static-${APK_STATIC_PKG}.apk" \
+        -o "$APK_TAR"
+    tar -xzf "$APK_TAR" -C "$APK_STATIC_DIR" sbin/apk.static 2>/dev/null
+    APK_BIN="$APK_STATIC_DIR/sbin/apk.static"
+    chmod +x "$APK_BIN"
+    echo "==> Using static apk from $APK_BIN"
+fi
+
 echo "==> Bootstrapping Alpine into $ROOTFS_DIR"
-apk --root "$ROOTFS_DIR" --initdb --arch x86_64 \
-    --repository https://dl-cdn.alpinelinux.org/alpine/v3.19/main \
-    --repository https://dl-cdn.alpinelinux.org/alpine/v3.19/community \
+"$APK_BIN" --root "$ROOTFS_DIR" --initdb --arch x86_64 \
+    --repository "${ALPINE_MIRROR}/v${ALPINE_VERSION}/main" \
+    --repository "${ALPINE_MIRROR}/v${ALPINE_VERSION}/community" \
+    --allow-untrusted \
     add alpine-base python3 py3-pip py3-numpy py3-scipy \
         py3-matplotlib py3-pandas iproute2
+
+# Set up DNS resolution for chroot (needed for pip downloads)
+cp /etc/resolv.conf "$ROOTFS_DIR/etc/resolv.conf" 2>/dev/null || true
 
 echo "==> Installing Python packages"
 chroot "$ROOTFS_DIR" pip3 install --break-system-packages \
