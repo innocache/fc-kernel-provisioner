@@ -91,6 +91,19 @@ class PoolManager:
             await self._destroy_vm(vm)
             del self._vms[vm_id]
             logger.info("Destroyed VM %s", vm_id)
+        else:
+            # Best-effort reset/stop of the guest before returning to the idle pool.
+            try:
+                from .vsock import vsock_request
+                await vsock_request(vm.vsock_path, {"action": "reset"}, timeout=10)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to reset guest for VM %s before releasing to idle pool: %s",
+                    vm_id,
+                    exc,
+                )
+            vm.transition_to(VMState.IDLE)
+            logger.info("Released VM %s back to idle pool", vm_id)
 
     async def is_alive(self, vm_id: str) -> dict[str, Any]:
         """Check if a VM is alive by pinging the guest agent."""
