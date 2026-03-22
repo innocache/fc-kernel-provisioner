@@ -58,7 +58,7 @@ class TestFirecrackerProcessEdgeCases:
         pool_client.release = AsyncMock()
         proc = FirecrackerProcess("vm-test", pool_client)
         await proc.kill()
-        pool_client.is_alive = AsyncMock(return_value=True)  # Should not be called
+        pool_client.is_alive = AsyncMock(return_value={"alive": True})  # Should not be called
         assert await proc.poll() == -9
 
 
@@ -143,6 +143,7 @@ class TestProvisionerCleanupEdgeCases:
         msg = mock_vsock.call_args[0][1]
         assert msg["action"] == "restart_kernel"
         assert msg["key"] == "test-hmac-key"
+        assert p.process is not None  # Process should be reset after restart
 
     async def test_cleanup_restart_without_vsock_path_falls_through(self):
         """If vsock_path is None, restart=True should release instead."""

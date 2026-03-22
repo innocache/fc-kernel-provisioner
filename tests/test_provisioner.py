@@ -9,22 +9,22 @@ from fc_provisioner.provisioner import FirecrackerProvisioner, FirecrackerProces
 class TestFirecrackerProcess:
     async def test_poll_alive(self):
         pool_client = MagicMock()
-        pool_client.is_alive = AsyncMock(return_value=True)
+        pool_client.is_alive = AsyncMock(return_value={"alive": True})
         proc = FirecrackerProcess("vm-test", pool_client)
         assert await proc.poll() is None
 
     async def test_poll_dead(self):
         pool_client = MagicMock()
-        pool_client.is_alive = AsyncMock(return_value=False)
+        pool_client.is_alive = AsyncMock(return_value={"alive": False})
         proc = FirecrackerProcess("vm-test", pool_client)
         assert await proc.poll() == 1
 
     async def test_poll_caches_exit_code(self):
         pool_client = MagicMock()
-        pool_client.is_alive = AsyncMock(return_value=False)
+        pool_client.is_alive = AsyncMock(return_value={"alive": False})
         proc = FirecrackerProcess("vm-test", pool_client)
         await proc.poll()
-        pool_client.is_alive = AsyncMock(return_value=True)
+        pool_client.is_alive = AsyncMock(return_value={"alive": True})
         assert await proc.poll() == 1
 
     async def test_kill(self):

@@ -55,6 +55,11 @@ def start_kernel(ports: dict, key: str) -> int:
 
     if kernel_proc is not None and kernel_proc.poll() is None:
         kernel_proc.terminate()
+        try:
+            kernel_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            kernel_proc.kill()
+            kernel_proc.wait()
         kernel_proc = None
 
     write_connection_file(_CONN_FILE, ports, key)

@@ -20,8 +20,8 @@ class FirecrackerProcess:
     async def poll(self) -> Optional[int]:
         if self._exit_code is not None:
             return self._exit_code
-        alive = await self.pool_client.is_alive(self.vm_id)
-        if not alive:
+        health = await self.pool_client.is_alive(self.vm_id)
+        if not health.get("alive", False):
             self._exit_code = 1
             return 1
         return None
@@ -80,33 +80,9 @@ class FirecrackerProvisioner(KernelProvisionerBase):
         kwargs["cmd"] = []
         return await super().pre_launch(**kwargs)
 
-    async def launch_kernel(self, cmd: list[str], **kwargs) -> dict[str, Any]:
-        """Launch the kernel inside the Firecracker VM via vsock and return connection info."""
-        conn_info = self.connection_info
-        key = conn_info.get("key", "")
-
-        resp = await vsock_request(
-            self.vsock_path,
-            {"action": "start_kernel", "ports": self.KERNEL_PORTS, "key": key},
-            timeout=30,
-        )
-
-        if resp.get("status") != "ready":
-            raise RuntimeError(
-                f"Guest agent failed to start kernel: {resp.get('error', 'unknown')}"
-            )
-
-        self.connection_info["ip"] = self.vm_ip
-        self.connection_info["transport"] = "tcp"
-        self.connection_info.update(self.KERNEL_PORTS)
-
-        self.process = FirecrackerProcess(self.vm_id, self.pool_client)
-        return self.connection_info
-
-    async def launch_process(self, cmd: list[str], **kwargs) -> FirecrackerProcess:
-        """Alias kept for backward compatibility / direct testing."""
-        conn_info = self.connection_info
-        key = conn_info.get("key", "")
+    async def _start_guest_kernel(self) -> None:
+        """Send start_kernel to guest agent and update connection info."""
+        key = self.connection_info.get("key", "")
 
         resp = await vsock_request(
             self.vsock_path,
@@ -123,8 +99,16 @@ class FirecrackerProvisioner(KernelProvisionerBase):
         self.connection_info["ip"] = self.vm_ip
         self.connection_info["transport"] = "tcp"
         self.connection_info.update(self.KERNEL_PORTS)
-
         self.process = FirecrackerProcess(self.vm_id, self.pool_client)
+
+    async def launch_kernel(self, cmd: list[str], **kwargs) -> dict[str, Any]:
+        """Launch the kernel inside the Firecracker VM via vsock and return connection info."""
+        await self._start_guest_kernel()
+        return self.connection_info
+
+    async def launch_process(self, cmd: list[str], **kwargs) -> FirecrackerProcess:
+        """Alias kept for backward compatibility / direct testing."""
+        await self._start_guest_kernel()
         return self.process
 
     @property
@@ -160,7 +144,7 @@ class FirecrackerProvisioner(KernelProvisionerBase):
 
     async def cleanup(self, restart: bool = False):
         if restart and self.vsock_path:
-            await vsock_request(
+            resp = await vsock_request(
                 self.vsock_path,
                 {
                     "action": "restart_kernel",
@@ -169,6 +153,10 @@ class FirecrackerProvisioner(KernelProvisionerBase):
                 },
                 timeout=30,
             )
+            if resp.get("status") != "ready":
+                error_msg = resp.get("message") or resp.get("error") or "unknown"
+                raise RuntimeError(f"Guest agent failed to restart kernel: {error_msg}")
+            self.process = FirecrackerProcess(self.vm_id, self.pool_client)
         elif self.vm_id and self.pool_client:
             await self.pool_client.release(self.vm_id, destroy=True)
             self.vm_id = None

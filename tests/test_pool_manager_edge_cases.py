@@ -15,7 +15,6 @@ def make_test_config(tmp_path, **overrides) -> PoolConfig:
 pool:
   size: {pool.get('size', 2)}
   max_vms: {pool.get('max_vms', 5)}
-  replenish_threshold: 1
   health_check_interval: 30
 vm_defaults:
   vcpu: 1

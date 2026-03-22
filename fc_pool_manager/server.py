@@ -19,7 +19,7 @@ def create_app(manager: PoolManager) -> web.Application:
     app["manager"] = manager
 
     app.router.add_post("/api/vms/acquire", handle_acquire)
-    app.router.add_post("/api/vms/{vm_id}/release", handle_release)
+    app.router.add_delete("/api/vms/{vm_id}", handle_release)
     app.router.add_get("/api/vms/{vm_id}/health", handle_health)
     app.router.add_get("/api/pool/status", handle_pool_status)
 
@@ -49,10 +49,21 @@ async def handle_acquire(request: web.Request) -> web.Response:
 async def handle_release(request: web.Request) -> web.Response:
     manager: PoolManager = request.app["manager"]
     vm_id = request.match_info["vm_id"]
-    body = await request.json()
-    destroy = body.get("destroy", True)
-    await manager.release(vm_id, destroy=destroy)
-    return web.json_response({"ok": True})
+    try:
+        if request.can_read_body:
+            body = await request.json()
+            destroy = body.get("destroy", True)
+        else:
+            destroy = True
+    except Exception:
+        destroy = True
+
+    try:
+        await manager.release(vm_id, destroy=destroy)
+        return web.json_response({"ok": True})
+    except Exception as e:
+        logger.error("Failed to release VM %s: %s", vm_id, e)
+        return web.json_response({"error": str(e)}, status=500)
 
 
 async def handle_health(request: web.Request) -> web.Response:
@@ -89,9 +100,9 @@ async def run_server(config_path: str, socket_path: str) -> None:
     def on_signal():
         stop_event.set()
 
-    loop = asyncio.get_event_loop()
+    running_loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, on_signal)
+        running_loop.add_signal_handler(sig, on_signal)
 
     await stop_event.wait()
 
