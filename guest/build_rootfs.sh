@@ -31,7 +31,7 @@ fi
 
 ROOTFS_DIR=$(mktemp -d)
 IMAGE=${1:-/opt/firecracker/rootfs.ext4}
-IMAGE_SIZE_MB=512
+IMAGE_SIZE_MB=1024
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 ALPINE_VERSION="3.19"
 ALPINE_MIRROR="https://dl-cdn.alpinelinux.org/alpine"
