@@ -5,7 +5,9 @@ import os
 import struct
 import sys
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
+
+import pytest
 
 AGENT_PATH = os.path.join(os.path.dirname(__file__), "..", "guest", "fc_guest_agent.py")
 
@@ -18,10 +20,55 @@ def load_agent_module():
 
 
 # ---------------------------------------------------------------------------
-# TestWriteConnectionFile
+# TestRecvExactly
 # ---------------------------------------------------------------------------
 
-class TestWriteConnectionFile:
+class TestRecvExactly:
+    def _make_sock(self, chunks: list):
+        """Return a mock socket whose recv() yields *chunks* in sequence."""
+        sock = MagicMock()
+        sock.recv.side_effect = chunks
+        return sock
+
+    def test_single_recv_returns_all_bytes(self):
+        mod = load_agent_module()
+        sock = self._make_sock([b"hello"])
+        result = mod.recv_exactly(sock, 5)
+        assert result == b"hello"
+        sock.recv.assert_called_once_with(5)
+
+    def test_multiple_partial_recvs_are_reassembled(self):
+        mod = load_agent_module()
+        # Simulate three partial reads for a 6-byte request
+        sock = self._make_sock([b"ab", b"cd", b"ef"])
+        result = mod.recv_exactly(sock, 6)
+        assert result == b"abcdef"
+        assert sock.recv.call_count == 3
+
+    def test_connection_closed_mid_stream_raises(self):
+        mod = load_agent_module()
+        # Two bytes arrive then the connection closes (empty bytes)
+        sock = self._make_sock([b"ab", b""])
+        with pytest.raises(ConnectionError):
+            mod.recv_exactly(sock, 6)
+
+    def test_connection_closed_immediately_raises(self):
+        mod = load_agent_module()
+        sock = self._make_sock([b""])
+        with pytest.raises(ConnectionError):
+            mod.recv_exactly(sock, 4)
+
+    def test_recv_requests_only_remaining_bytes(self):
+        """Each recv() call should request only the outstanding byte count."""
+        mod = load_agent_module()
+        sock = self._make_sock([b"A", b"BC", b"D"])
+        result = mod.recv_exactly(sock, 4)
+        assert result == b"ABCD"
+        assert sock.recv.call_args_list == [call(4), call(3), call(1)]
+
+
+# ---------------------------------------------------------------------------
+# TestWriteConnectionFile
     def test_writes_valid_connection_json(self, tmp_path):
         mod = load_agent_module()
         conn_file = tmp_path / "kernel.json"
