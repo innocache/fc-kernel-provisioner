@@ -28,7 +28,7 @@ class PoolManager:
         )
         self._cid_alloc = CIDAllocator()
         self._boot_lock = asyncio.Lock()
-        self._pool_lock = asyncio.Lock()
+        self._state_lock = asyncio.Lock()
 
     @property
     def idle_count(self) -> int:
@@ -56,7 +56,7 @@ class PoolManager:
                 f"(vcpu={self._config.vm_vcpu}, mem_mib={self._config.vm_mem_mib})"
             )
 
-        async with self._pool_lock:
+        async with self._state_lock:
             for vm in self._vms.values():
                 if vm.state == VMState.IDLE:
                     vm.transition_to(VMState.ASSIGNED)
@@ -71,10 +71,21 @@ class PoolManager:
             if self.total_count >= self._config.max_vms:
                 raise RuntimeError("pool_exhausted")
 
-        # No idle VMs but under max — boot one on demand
+        # No idle VMs but under max — boot one on demand.
+        # _boot_lock serializes concurrent on-demand boots so total_count
+        # cannot exceed max_vms even with concurrent acquire() calls.
         logger.info("No idle VMs, booting on demand")
-        vm = await self._boot_vm()
-        async with self._pool_lock:
+        async with self._boot_lock:
+            if self.total_count >= self._config.max_vms:
+                raise RuntimeError("pool_exhausted")
+            vm = await self._boot_vm()
+
+        # The freshly booted VM is IDLE in _vms.  Re-acquire _state_lock to
+        # atomically verify it was not claimed by a concurrent acquire() and
+        # then transition it to ASSIGNED.
+        async with self._state_lock:
+            if self._vms.get(vm.vm_id) is not vm or vm.state != VMState.IDLE:
+                raise RuntimeError("pool_exhausted")
             vm.transition_to(VMState.ASSIGNED)
         return {
             "id": vm.vm_id,
@@ -82,19 +93,15 @@ class PoolManager:
             "vsock_path": vm.vsock_path,
         }
 
-    async def release(self, vm_id: str, destroy: bool = True) -> None:
-        """Release a VM back to the pool or destroy it."""
-        vm = self._vms.get(vm_id)
-        if vm is None:
-            logger.warning("Release called for unknown VM %s", vm_id)
-            return
-
-        if destroy:
-            async with self._pool_lock:
-                vm.transition_to(VMState.STOPPING)
-            await self._destroy_vm(vm)
-            async with self._pool_lock:
-                del self._vms[vm_id]
+    async def release(self, vm_id: str) -> None:
+        """Destroy and remove a VM from the pool."""
+        async with self._state_lock:
+            vm = self._vms.get(vm_id)
+            if vm is None:
+                logger.warning("Release called for unknown VM %s", vm_id)
+                return
+            vm.transition_to(VMState.STOPPING)
+            del self._vms[vm_id]
             logger.info("Destroyed VM %s", vm_id)
         else:
             # Best-effort reset/stop of the guest before returning to the idle pool.
@@ -219,11 +226,9 @@ class PoolManager:
             await asyncio.to_thread(shutil.rmtree, vm.jail_path, ignore_errors=True)
 
     async def replenish(self) -> None:
-        """Boot VMs until idle count meets pool_size.
-
-        Replenishment is triggered when idle count drops below replenish_threshold
-        and continues until the pool_size target is reached.
-        """
+        """Boot VMs up to pool_size when idle count drops below replenish_threshold."""
+        if self.idle_count >= self._config.replenish_threshold:
+            return
         async with self._boot_lock:
             if self.idle_count >= self._config.replenish_threshold:
                 return
@@ -245,15 +250,21 @@ class PoolManager:
         """Periodically ping idle VMs and replace unhealthy ones."""
         while True:
             await asyncio.sleep(self._config.health_check_interval)
-            for vm in list(self._vms.values()):
-                if vm.state != VMState.IDLE:
-                    continue
+            async with self._state_lock:
+                idle_vms = [vm for vm in self._vms.values() if vm.state == VMState.IDLE]
+            for vm in idle_vms:
                 health = await self.is_alive(vm.vm_id)
                 if not health["alive"]:
                     logger.warning("VM %s unhealthy, replacing", vm.vm_id)
-                    vm.transition_to(VMState.STOPPING)
-                    await self._destroy_vm(vm)
-                    del self._vms[vm.vm_id]
+                    should_destroy = False
+                    async with self._state_lock:
+                        current = self._vms.get(vm.vm_id)
+                        if current is vm and vm.state == VMState.IDLE:
+                            vm.transition_to(VMState.STOPPING)
+                            del self._vms[vm.vm_id]
+                            should_destroy = True
+                    if should_destroy:
+                        await self._destroy_vm(vm)
             await self.replenish()
 
     async def shutdown(self) -> None:

@@ -30,12 +30,12 @@ class PoolClient:
             resp.raise_for_status()
             return await resp.json()
 
-    async def release(self, vm_id: str, destroy: bool = True) -> None:
-        """Release a VM back to the pool."""
+    async def release(self, vm_id: str) -> None:
+        """Destroy and release a VM back to the pool."""
         async with aiohttp.ClientSession(connector=self._connector()) as session:
             resp = await session.post(
                 f"{self._base_url}/api/vms/{vm_id}/release",
-                json={"destroy": destroy},
+                json={},
             )
             resp.raise_for_status()
 

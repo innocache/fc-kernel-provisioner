@@ -14,7 +14,17 @@ import logging
 import struct
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 GUEST_AGENT_PORT = 52
+_SENSITIVE_KEYS = frozenset({"key", "token", "password", "secret"})
+
+
+def _safe_log_msg(msg: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of *msg* with sensitive fields redacted for logging."""
+    return {k: "<redacted>" if k in _SENSITIVE_KEYS else v for k, v in msg.items()}
+
+
 HEADER_FMT = "!I"
 HEADER_SIZE = struct.calcsize(HEADER_FMT)
 
@@ -79,8 +89,8 @@ async def vsock_send_only(
         await _handshake(reader, writer)
         writer.write(_encode_message(msg))
         await writer.drain()
-    except Exception as exc:
-        logger.warning("vsock_send_only failed (path=%s): %s", vsock_uds_path, exc)
+    except Exception:
+        logger.warning("Failed to send vsock message to %s: %s", vsock_uds_path, _safe_log_msg(msg), exc_info=True)
     finally:
         writer.close()
         await writer.wait_closed()
