@@ -81,6 +81,23 @@ def start_kernel(ports: dict, key: str) -> int:
 # Message protocol
 # ---------------------------------------------------------------------------
 
+def recv_exactly(sock: socket.socket, n: int) -> bytes:
+    """Read exactly *n* bytes from *sock*, looping until all bytes arrive.
+
+    Raises ``ConnectionError`` if the connection is closed before *n* bytes
+    have been received.
+    """
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            raise ConnectionError(
+                f"connection closed after {len(buf)}/{n} bytes"
+            )
+        buf.extend(chunk)
+    return bytes(buf)
+
+
 def _encode_response(obj: dict) -> bytes:
     body = json.dumps(obj).encode()
     return struct.pack(HEADER_FMT, len(body)) + body
@@ -149,11 +166,9 @@ def main() -> None:  # pragma: no cover
         conn, addr = srv.accept()
         with conn:
             try:
-                header = conn.recv(header_size)
-                if len(header) < header_size:
-                    continue
+                header = recv_exactly(conn, header_size)
                 (length,) = struct.unpack(HEADER_FMT, header)
-                body = conn.recv(length)
+                body = recv_exactly(conn, length)
                 raw = header + body
                 response = handle_message(raw)
                 conn.sendall(response)
