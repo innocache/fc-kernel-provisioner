@@ -69,6 +69,10 @@ class TestRecvExactly:
 
 # ---------------------------------------------------------------------------
 # TestWriteConnectionFile
+# ---------------------------------------------------------------------------
+
+
+class TestWriteConnectionFile:
     def test_writes_valid_connection_json(self, tmp_path):
         mod = load_agent_module()
         conn_file = tmp_path / "kernel.json"
