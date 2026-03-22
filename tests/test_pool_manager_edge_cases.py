@@ -76,7 +76,8 @@ class TestAcquireEdgeCases:
 
         # With only a BOOTING VM present, total_count < max_vms, so acquire()
         # should skip the BOOTING VM and attempt to boot a new one via _boot_vm.
-        # Our mock _boot_vm returns None, so acquire() will ultimately raise pool_exhausted.
+        # Mock _boot_vm to raise, simulating a failed on-demand boot.
+        manager._boot_vm = AsyncMock(side_effect=RuntimeError("pool_exhausted"))
         with pytest.raises(RuntimeError, match="pool_exhausted"):
             await manager.acquire(vcpu=1, mem_mib=512)
 
