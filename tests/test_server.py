@@ -1,9 +1,11 @@
 """Tests for the pool manager HTTP server."""
 
 import pytest
-from aiohttp import web
 from unittest.mock import AsyncMock, MagicMock
-from fc_pool_manager.server import create_app
+
+pytest.importorskip("pytest_aiohttp")
+from aiohttp import web  # noqa: E402
+from fc_pool_manager.server import create_app  # noqa: E402
 
 
 class TestPoolManagerServer:
