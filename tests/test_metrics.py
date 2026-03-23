@@ -174,6 +174,7 @@ async def test_vm_gauges_after_acquire(tmp_path):
     manager = PoolManager(make_test_config(tmp_path))
     vm = make_vm("vm-acq", VMState.IDLE)
     manager._vms[vm.vm_id] = vm
+    manager.replenish = AsyncMock(return_value=None)
 
     idle_before = metric_value("fc_pool_vms_total", {"state": "idle"})
     assigned_before = metric_value("fc_pool_vms_total", {"state": "assigned"})
@@ -208,6 +209,7 @@ async def test_vm_gauges_after_release(tmp_path):
 async def test_acquire_total_success(tmp_path):
     manager = PoolManager(make_test_config(tmp_path))
     manager._vms["vm-ok"] = make_vm("vm-ok", VMState.IDLE)
+    manager.replenish = AsyncMock(return_value=None)
     before = metric_value("fc_pool_acquire_total", {"result": "success"})
     await manager.acquire(vcpu=1, mem_mib=512)
     assert metric_value("fc_pool_acquire_total", {"result": "success"}) == pytest.approx(before + 1)
@@ -226,6 +228,7 @@ async def test_acquire_total_exhausted(tmp_path):
 async def test_acquire_duration_observed(tmp_path):
     manager = PoolManager(make_test_config(tmp_path))
     manager._vms["vm-dur"] = make_vm("vm-dur", VMState.IDLE)
+    manager.replenish = AsyncMock(return_value=None)
     before = metric_value("fc_pool_acquire_duration_seconds_count")
     await manager.acquire(vcpu=1, mem_mib=512)
     assert metric_value("fc_pool_acquire_duration_seconds_count") == pytest.approx(before + 1)
