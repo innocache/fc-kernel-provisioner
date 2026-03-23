@@ -217,3 +217,53 @@ class TestSandboxClient:
         files = list(artifact_dir.rglob("*.png"))
         assert len(files) >= 1
         assert files[0].stat().st_size > 100
+
+    async def test_sandbox_explicit_lifecycle(self):
+        """start()/stop() without context manager."""
+        session = SandboxSession(GATEWAY_URL)
+        await session.start()
+        try:
+            result = await session.execute("print('explicit')")
+            assert result.success is True
+            assert result.stdout.strip() == "explicit"
+        finally:
+            await session.stop()
+
+    async def test_sandbox_error_recovery(self):
+        """Session stays usable after an execution error."""
+        async with SandboxSession(GATEWAY_URL) as session:
+            # First: error
+            r1 = await session.execute("1/0")
+            assert r1.success is False
+
+            # Second: should still work
+            r2 = await session.execute("print('recovered')")
+            assert r2.success is True
+            assert r2.stdout.strip() == "recovered"
+
+    async def test_sandbox_execution_count_increments(self):
+        """execution_count increments with each execution."""
+        async with SandboxSession(GATEWAY_URL) as session:
+            r1 = await session.execute("1 + 1")
+            r2 = await session.execute("2 + 2")
+            assert r2.execution_count > r1.execution_count
+
+    async def test_sandbox_stderr_captured(self):
+        """stderr from print(..., file=sys.stderr) is captured."""
+        async with SandboxSession(GATEWAY_URL) as session:
+            result = await session.execute(
+                "import sys; print('warning', file=sys.stderr)"
+            )
+        assert result.success is True
+        assert "warning" in result.stderr
+
+    async def test_sandbox_stdout_before_error(self):
+        """stdout captured before error is preserved."""
+        async with SandboxSession(GATEWAY_URL) as session:
+            result = await session.execute(
+                "print('before')\n"
+                "raise RuntimeError('boom')"
+            )
+        assert result.success is False
+        assert "before" in result.stdout
+        assert result.error.name == "RuntimeError"

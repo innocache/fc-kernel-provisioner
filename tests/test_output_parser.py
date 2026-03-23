@@ -259,3 +259,141 @@ class TestOutputParserDisplayOutputs:
         assert len(result.outputs) == 2
         assert result.outputs[0].mime_type == "image/png"
         assert result.outputs[1].mime_type == "text/html"
+
+
+class TestOutputParserEdgeCases:
+    def test_missing_header_key(self):
+        """Message with no 'header' key is treated as unknown type."""
+        messages = [{"content": {"name": "stdout", "text": "hi"}}]
+        result = OutputParser.parse(messages)
+        assert result.stdout == ""
+        assert result.success is True
+
+    def test_missing_content_key(self):
+        """Message with no 'content' key uses empty dict fallback."""
+        messages = [{"header": {"msg_type": "stream"}}]
+        result = OutputParser.parse(messages)
+        assert result.stdout == ""
+
+    def test_empty_header(self):
+        """Message with empty header dict has empty msg_type."""
+        messages = [{"header": {}, "content": {"name": "stdout", "text": "x"}}]
+        result = OutputParser.parse(messages)
+        assert result.stdout == ""
+
+    def test_none_execution_count_coerced_to_zero(self):
+        """execution_count of None is coerced to 0 via `or 0`."""
+        messages = [
+            {"header": {"msg_type": "execute_reply"}, "content": {
+                "status": "ok", "execution_count": None,
+            }},
+        ]
+        result = OutputParser.parse(messages)
+        assert result.execution_count == 0
+
+    def test_missing_execution_count_defaults_zero(self):
+        """execute_reply without execution_count defaults to 0."""
+        messages = [
+            {"header": {"msg_type": "execute_reply"}, "content": {
+                "status": "ok",
+            }},
+        ]
+        result = OutputParser.parse(messages)
+        assert result.execution_count == 0
+
+    def test_empty_data_dict_in_display_data(self):
+        """display_data with empty data dict produces no outputs."""
+        messages = [
+            {"header": {"msg_type": "display_data"}, "content": {"data": {}}},
+        ]
+        result = OutputParser.parse(messages)
+        assert result.outputs == []
+
+    def test_unknown_mime_types_ignored(self):
+        """Mime types not in _MIME_PRIORITY are ignored."""
+        messages = [
+            {"header": {"msg_type": "display_data"}, "content": {
+                "data": {"application/pdf": "abc123", "text/x-custom": "foo"},
+            }},
+        ]
+        result = OutputParser.parse(messages)
+        assert result.outputs == []
+
+    def test_unknown_mime_with_text_plain_fallback(self):
+        """text/plain kept when only unknown types and text/plain exist."""
+        messages = [
+            {"header": {"msg_type": "display_data"}, "content": {
+                "data": {"application/pdf": "abc", "text/plain": "fallback text"},
+            }},
+        ]
+        result = OutputParser.parse(messages)
+        assert len(result.outputs) == 1
+        assert result.outputs[0].mime_type == "text/plain"
+        assert result.outputs[0].data == "fallback text"
+
+    def test_execute_result_extracts_execution_count(self):
+        """execute_result also triggers display output extraction."""
+        messages = [
+            {"header": {"msg_type": "execute_result"}, "content": {
+                "data": {"text/plain": "99"},
+                "execution_count": 7,
+            }},
+            {"header": {"msg_type": "execute_reply"}, "content": {
+                "status": "ok", "execution_count": 7,
+            }},
+        ]
+        result = OutputParser.parse(messages)
+        assert result.execution_count == 7
+        assert len(result.outputs) == 1
+
+    def test_stream_default_name_is_stdout(self):
+        """stream without name field defaults to stdout."""
+        messages = [
+            {"header": {"msg_type": "stream"}, "content": {"text": "default\n"}},
+        ]
+        result = OutputParser.parse(messages)
+        assert result.stdout == "default\n"
+
+    def test_error_defaults(self):
+        """error message with missing fields uses defaults."""
+        messages = [
+            {"header": {"msg_type": "error"}, "content": {}},
+        ]
+        result = OutputParser.parse(messages)
+        assert result.success is False
+        assert result.error.name == "Error"
+        assert result.error.value == ""
+        assert result.error.traceback == []
+
+    def test_mixed_stdout_stderr_ordering(self):
+        """stdout and stderr from interleaved streams are accumulated separately."""
+        messages = [
+            {"header": {"msg_type": "stream"}, "content": {"name": "stdout", "text": "a"}},
+            {"header": {"msg_type": "stream"}, "content": {"name": "stderr", "text": "e1"}},
+            {"header": {"msg_type": "stream"}, "content": {"name": "stdout", "text": "b"}},
+            {"header": {"msg_type": "stream"}, "content": {"name": "stderr", "text": "e2"}},
+        ]
+        result = OutputParser.parse(messages)
+        assert result.stdout == "ab"
+        assert result.stderr == "e1e2"
+
+    def test_display_data_missing_data_key(self):
+        """display_data with no 'data' key produces no outputs."""
+        messages = [
+            {"header": {"msg_type": "display_data"}, "content": {}},
+        ]
+        result = OutputParser.parse(messages)
+        assert result.outputs == []
+
+    def test_json_output_nested(self):
+        """application/json with nested structure is serialized correctly."""
+        nested = {"items": [1, 2, 3], "meta": {"count": 3}}
+        messages = [
+            {"header": {"msg_type": "display_data"}, "content": {
+                "data": {"application/json": nested},
+            }},
+        ]
+        result = OutputParser.parse(messages)
+        assert len(result.outputs) == 1
+        parsed = json.loads(result.outputs[0].data)
+        assert parsed == nested
