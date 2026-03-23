@@ -10,6 +10,15 @@
 
 **Spec:** `docs/superpowers/specs/2026-03-22-sandbox-client-design.md`
 
+**Status:** All tasks complete. 70 unit tests + 12 integration tests passing.
+
+| Chunk | Status |
+|-------|--------|
+| 1: Data Classes + OutputParser (Tasks 1-3) | DONE |
+| 2: ArtifactStore (Tasks 4-5) | DONE |
+| 3-4: SandboxSession + Integration (Tasks 6-8) | DONE |
+| Post-plan: Edge case coverage tests | DONE — 34 additional tests added |
+
 ---
 
 ## File Map

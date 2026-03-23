@@ -20,14 +20,14 @@
 | Chunk 2: Networking + Config (Tasks 4–6) | **DONE** | All implemented and tested |
 | Chunk 3: Pool Manager Core (Tasks 7–10) | **DONE** | All implemented and tested |
 | Chunk 4: Provisioner Plugin (Tasks 11–13) | **DONE** | All implemented and tested |
-| Chunk 5: Integration Test (Tasks 14–15) | **DONE** | Integration test written; unit tests all pass (207 tests) |
+| Chunk 5: Integration Test (Tasks 14–15) | **DONE** | Integration test written; unit tests all pass |
 | Post-plan: Edge case tests | **DONE** | 8 edge case test files added (PRs #10–#12) |
 | Post-plan: Code review fixes | **DONE** | 22 issues fixed (PR #13) |
 | Post-plan: Reversible host setup | **DONE** | Teardown modes for all scripts (PR #14) |
 | Post-plan: Testing docs | **DONE** | docs/testing.md updated (PR #15) |
 | Post-plan: Graceful test skips | **DONE** | pytest.importorskip for optional deps (PR #16) |
 | Post-plan: README | **DONE** | Project README.md added (PR #24) |
-| **Integration testing on KVM host** | **NOT STARTED** | Requires Linux host with /dev/kvm |
+| **Integration testing on KVM host** | **DONE** | 281 unit + 17 integration tests passing |
 
 ---
 

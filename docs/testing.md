@@ -45,7 +45,7 @@ Run anywhere — macOS, Linux, CI. Tests use mocks for all system interactions.
 uv run pytest tests/ -v -m "not integration"
 ```
 
-**144 tests across 17 test files.** Expected to pass in < 5 seconds.
+**281 tests across 22 test files.** Expected to pass in < 5 seconds.
 
 **What's covered:**
 
@@ -61,6 +61,9 @@ uv run pytest tests/ -v -m "not integration"
 | Vsock client | `test_vsock_client.py`, `test_vsock_client_edge_cases.py` | Message framing, encode/decode roundtrip, unicode, large payloads, truncated messages |
 | Pool client | `test_pool_client.py` | HTTP client construction |
 | Provisioner | `test_provisioner.py`, `test_provisioner_edge_cases.py` | Lifecycle (pre_launch, launch, cleanup), restart state reset, connection info roundtrip, signal forwarding |
+| Output parser | `test_output_parser.py` | Jupyter message parsing → ExecutionResult. Stream/error/display_data/execute_reply handling. Mime bundle priority. Binary (PNG) vs text output. Malformed messages, edge cases |
+| Sandbox session | `test_session.py` | Lifecycle (start/stop/context manager), execute message format, timeout + interrupt, WebSocket error types, artifact store integration, HTTPS→WSS, msg_id filtering |
+| Artifact store | `test_artifact_store.py` | LocalArtifactStore file creation, URL generation, directory creation, overwrite, protocol compliance |
 
 ### Level 2: Smoke Test (manual, requires running services)
 
@@ -88,12 +91,14 @@ End-to-end test: code execution through the entire Firecracker path via the Kern
 uv run pytest tests/test_integration.py -v -m integration
 ```
 
+**17 tests.** Expected to pass in < 2 minutes.
+
 **What's covered:**
-- `print('hello')` → stdout `"hello"` through full path
-- State persistence across cells (`x = 42` then `print(x)`)
-- Error handling (`1/0` → `ZeroDivisionError`)
-- Package imports (`import numpy`)
-- Multi-line output
+
+| Test class | Tests |
+|-----------|-------|
+| `TestFullPipeline` | hello_world, state persistence, error handling, imports (numpy), multiline output |
+| `TestSandboxClient` | hello_world, state persistence, error handling (with traceback), rich output (matplotlib PNG), HTML output (pandas DataFrame), timeout + interrupt, artifact store (file written + URL), explicit lifecycle (start/stop), error recovery (session reuse after error), execution_count increments, stderr capture, stdout before error |
 
 **Prerequisites:** Pool manager running, Kernel Gateway running, rootfs built, network configured.
 

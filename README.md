@@ -51,7 +51,12 @@ fc-kernel-provisioner/
 │   ├── remote-test.sh       # Remote integration test runner
 │   └── deploy.sh            # Production deployment manager
 │
-└── tests/                   # 207 unit tests, no KVM required
+├── sandbox_client/         # Python client library for chatbot backends
+│   ├── session.py          # SandboxSession — execute code, get structured results
+│   ├── output.py           # OutputParser, ExecutionResult, DisplayOutput
+│   └── artifact_store.py   # ArtifactStore protocol, LocalArtifactStore
+│
+└── tests/                   # 281 unit + 17 integration tests
 ```
 
 ## Requirements
@@ -102,6 +107,39 @@ uv run jupyter kernelgateway \
 uv run pytest tests/test_integration.py -v -m integration
 ```
 
+## Sandbox Client
+
+A Python client library for chatbot backends to execute code and get structured results:
+
+```python
+from sandbox_client import SandboxSession
+
+async with SandboxSession("http://localhost:8888") as session:
+    result = await session.execute("print('hello')")
+    print(result.stdout)      # "hello\n"
+    print(result.success)     # True
+
+    # Rich output (images, HTML)
+    result = await session.execute("import matplotlib.pyplot as plt; plt.plot([1,2,3]); plt.show()")
+    print(result.outputs[0].mime_type)  # "image/png"
+    print(type(result.outputs[0].data)) # <class 'bytes'>
+
+    # Error handling
+    result = await session.execute("1/0")
+    print(result.error.name)  # "ZeroDivisionError"
+```
+
+Optional artifact storage for URL-based output delivery:
+
+```python
+from sandbox_client import SandboxSession, LocalArtifactStore
+
+store = LocalArtifactStore(base_dir="/var/lib/artifacts", url_prefix="http://localhost:8080/artifacts")
+async with SandboxSession("http://localhost:8888", artifact_store=store) as session:
+    result = await session.execute("...")
+    print(result.outputs[0].url)  # "http://localhost:8080/artifacts/{session_id}/output_0.png"
+```
+
 ## Pool Manager API
 
 The pool manager exposes a Unix socket HTTP API at `/var/run/fc-pool.sock`:
@@ -147,7 +185,7 @@ jailer:
 See [docs/testing.md](docs/testing.md) for the full testing plan.
 
 ```bash
-# Unit tests (207 tests, no KVM required)
+# Unit tests (281 tests, no KVM required)
 uv run pytest tests/ -v -m "not integration"
 
 # Smoke test (requires running services)
@@ -181,7 +219,7 @@ sudo ./guest/build_rootfs.sh --clean      # Remove built rootfs image
 
 ## Status
 
-The **core slice** is complete: Python code execution inside jailed Firecracker microVMs with stdout capture via the Jupyter kernel protocol. See [GitHub Issues](https://github.com/innocache/fc-kernel-provisioner/issues) for planned follow-on work.
+The **core slice** and **sandbox client** are complete: Python code execution inside jailed Firecracker microVMs with structured result capture (stdout, stderr, errors, images, HTML) via the `sandbox_client` library. See [GitHub Issues](https://github.com/innocache/fc-kernel-provisioner/issues) for planned follow-on work.
 
 ## License
 
