@@ -7,6 +7,7 @@ import os
 import signal
 
 from aiohttp import web
+from prometheus_client.aiohttp import make_aiohttp_handler
 
 from .config import PoolConfig
 from .manager import PoolManager
@@ -23,6 +24,7 @@ def create_app(manager: PoolManager) -> web.Application:
     app.router.add_delete("/api/vms/{vm_id}", handle_release)
     app.router.add_get("/api/vms/{vm_id}/health", handle_health)
     app.router.add_get("/api/pool/status", handle_pool_status)
+    app.router.add_get("/api/metrics", make_aiohttp_handler())
 
     return app
 
@@ -98,6 +100,7 @@ async def run_server(config_path: str, socket_path: str) -> None:
     await manager.replenish()
 
     health_task = asyncio.create_task(manager.health_check_loop())
+    cull_task = asyncio.create_task(manager.auto_cull_loop())
 
     stop_event = asyncio.Event()
 
@@ -112,6 +115,7 @@ async def run_server(config_path: str, socket_path: str) -> None:
 
     logger.info("Shutting down...")
     health_task.cancel()
+    cull_task.cancel()
     await manager.shutdown()
     await runner.cleanup()
 

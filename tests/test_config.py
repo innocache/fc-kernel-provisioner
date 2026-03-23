@@ -55,6 +55,92 @@ jailer:
         assert cfg.jailer_uid == 1000
         assert cfg.jailer_gid == 1000
 
+    def test_vm_idle_timeout_default(self, tmp_path):
+        yaml_content = """
+pool:
+  size: 3
+  max_vms: 10
+vm_defaults:
+  vcpu: 1
+  mem_mib: 512
+  kernel: /opt/fc/vmlinux
+  rootfs: /opt/fc/rootfs.ext4
+  boot_args_template: "ip={vm_ip}"
+network:
+  bridge: br0
+  subnet: "10.0.0.0/24"
+  gateway: "10.0.0.1"
+  vm_ip_start: 2
+jailer:
+  enabled: true
+  chroot_base: /tmp/j
+  exec_path: /usr/bin/firecracker
+  uid: 1000
+  gid: 1000
+"""
+        f = tmp_path / "c.yaml"
+        f.write_text(yaml_content)
+        cfg = PoolConfig.from_yaml(str(f))
+        assert cfg.vm_idle_timeout == 600
+
+    def test_vm_idle_timeout_explicit(self, tmp_path):
+        yaml_content = """
+pool:
+  size: 3
+  max_vms: 10
+  vm_idle_timeout: 300
+vm_defaults:
+  vcpu: 1
+  mem_mib: 512
+  kernel: /opt/fc/vmlinux
+  rootfs: /opt/fc/rootfs.ext4
+  boot_args_template: "ip={vm_ip}"
+network:
+  bridge: br0
+  subnet: "10.0.0.0/24"
+  gateway: "10.0.0.1"
+  vm_ip_start: 2
+jailer:
+  enabled: true
+  chroot_base: /tmp/j
+  exec_path: /usr/bin/firecracker
+  uid: 1000
+  gid: 1000
+"""
+        f = tmp_path / "c.yaml"
+        f.write_text(yaml_content)
+        cfg = PoolConfig.from_yaml(str(f))
+        assert cfg.vm_idle_timeout == 300
+
+    def test_vm_idle_timeout_zero(self, tmp_path):
+        yaml_content = """
+pool:
+  size: 3
+  max_vms: 10
+  vm_idle_timeout: 0
+vm_defaults:
+  vcpu: 1
+  mem_mib: 512
+  kernel: /opt/fc/vmlinux
+  rootfs: /opt/fc/rootfs.ext4
+  boot_args_template: "ip={vm_ip}"
+network:
+  bridge: br0
+  subnet: "10.0.0.0/24"
+  gateway: "10.0.0.1"
+  vm_ip_start: 2
+jailer:
+  enabled: true
+  chroot_base: /tmp/j
+  exec_path: /usr/bin/firecracker
+  uid: 1000
+  gid: 1000
+"""
+        f = tmp_path / "c.yaml"
+        f.write_text(yaml_content)
+        cfg = PoolConfig.from_yaml(str(f))
+        assert cfg.vm_idle_timeout == 0
+
     def test_missing_file_raises(self):
         with pytest.raises(FileNotFoundError):
             PoolConfig.from_yaml("/nonexistent/config.yaml")

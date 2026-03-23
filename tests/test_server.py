@@ -72,3 +72,20 @@ class TestPoolManagerServer:
         assert resp.status == 200
         data = await resp.json()
         assert data["idle"] == 3
+
+    async def test_metrics_endpoint_200(self, client):
+        c = await client
+        resp = await c.get("/api/metrics")
+        assert resp.status == 200
+
+    async def test_metrics_content_type(self, client):
+        c = await client
+        resp = await c.get("/api/metrics")
+        assert "text/plain" in resp.headers.get("Content-Type", "")
+
+    async def test_metrics_body_contains_prometheus_format(self, client):
+        c = await client
+        resp = await c.get("/api/metrics")
+        body = await resp.text()
+        assert "# HELP" in body
+        assert "# TYPE" in body

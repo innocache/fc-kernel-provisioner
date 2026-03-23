@@ -1,5 +1,7 @@
 """VM instance state management and CID allocation."""
 
+import time
+
 from asyncio.subprocess import Process
 from dataclasses import dataclass, field
 from enum import Enum
@@ -70,6 +72,8 @@ class VMInstance:
     vsock_path: str
     state: VMState = field(default=VMState.BOOTING)
     jailer_process: Optional[Process] = field(default=None, repr=False)
+    created_at: float = field(default_factory=time.monotonic)
+    assigned_at: Optional[float] = field(default=None)
 
     def transition_to(self, new_state: VMState) -> None:
         if not self.state.can_transition_to(new_state):
@@ -78,3 +82,7 @@ class VMInstance:
                 f"for VM {self.vm_id}"
             )
         self.state = new_state
+        if new_state == VMState.ASSIGNED:
+            self.assigned_at = time.monotonic()
+        elif new_state == VMState.IDLE:
+            self.assigned_at = None

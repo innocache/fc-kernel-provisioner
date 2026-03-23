@@ -5,14 +5,27 @@ import logging
 import os
 import secrets
 import shutil
+import time
 from typing import Any, Optional
 
 from .config import PoolConfig
 from .firecracker_api import FirecrackerAPI
+from .metrics import (
+    ACQUIRE_DURATION,
+    ACQUIRE_TOTAL,
+    AUTO_CULL_TOTAL,
+    BOOT_DURATION,
+    HEALTH_CHECK_FAILURES_TOTAL,
+    POOL_MAX_VMS,
+    POOL_VMS_TOTAL,
+    RELEASE_TOTAL,
+)
 from .network import NetworkManager
 from .vm import CIDAllocator, VMInstance, VMState
 
 logger = logging.getLogger(__name__)
+
+_CULL_INTERVAL = 60
 
 
 class PoolManager:
@@ -29,6 +42,14 @@ class PoolManager:
         self._cid_alloc = CIDAllocator()
         self._boot_lock = asyncio.Lock()
         self._acquire_lock = asyncio.Lock()
+        POOL_MAX_VMS.set(config.max_vms)
+
+    def _update_vm_gauges(self) -> None:
+        counts = {s.value: 0 for s in VMState}
+        for vm in self._vms.values():
+            counts[vm.state.value] += 1
+        for state, count in counts.items():
+            POOL_VMS_TOTAL.labels(state=state).set(count)
 
     @property
     def idle_count(self) -> int:
@@ -56,6 +77,21 @@ class PoolManager:
                 f"(vcpu={self._config.vm_vcpu}, mem_mib={self._config.vm_mem_mib})"
             )
 
+        t0 = asyncio.get_event_loop().time()
+        try:
+            result = await self._acquire_inner(vcpu, mem_mib)
+            ACQUIRE_DURATION.observe(asyncio.get_event_loop().time() - t0)
+            ACQUIRE_TOTAL.labels(result="success").inc()
+            self._update_vm_gauges()
+            return result
+        except RuntimeError as e:
+            if "pool_exhausted" in str(e):
+                ACQUIRE_TOTAL.labels(result="exhausted").inc()
+            else:
+                ACQUIRE_TOTAL.labels(result="error").inc()
+            raise
+
+    async def _acquire_inner(self, vcpu: int, mem_mib: int) -> dict[str, Any]:
         async with self._acquire_lock:
             for vm in self._vms.values():
                 if vm.state == VMState.IDLE:
@@ -107,6 +143,9 @@ class PoolManager:
                 )
             vm.transition_to(VMState.IDLE)
             logger.info("Released VM %s back to idle pool", vm_id)
+
+        RELEASE_TOTAL.inc()
+        self._update_vm_gauges()
 
     async def is_alive(self, vm_id: str) -> dict[str, Any]:
         """Check if a VM is alive by pinging the guest agent."""
@@ -205,7 +244,10 @@ class PoolManager:
                     await asyncio.sleep(0.5)
 
             vm.transition_to(VMState.IDLE)
+            boot_secs = asyncio.get_event_loop().time() - vm.created_at
+            BOOT_DURATION.observe(boot_secs)
             logger.info("VM %s booted (ip=%s, cid=%d)", vm_id, ip, cid)
+            self._update_vm_gauges()
             return vm
 
         except Exception:
@@ -246,6 +288,7 @@ class PoolManager:
                 # If total_count didn't increase, boot made no progress — stop.
                 if self.total_count <= count_before:
                     break
+        self._update_vm_gauges()
 
     async def health_check_loop(self) -> None:
         """Periodically ping idle VMs and replace unhealthy ones."""
@@ -258,10 +301,72 @@ class PoolManager:
                     health = await self.is_alive(vm.vm_id)
                     if not health["alive"]:
                         logger.warning("VM %s unhealthy, replacing", vm.vm_id)
+                        HEALTH_CHECK_FAILURES_TOTAL.inc()
                         vm.transition_to(VMState.STOPPING)
                         await self._destroy_vm(vm)
                         del self._vms[vm.vm_id]
+            self._update_vm_gauges()
             await self.replenish()
+
+    async def auto_cull_loop(self) -> None:
+        if self._config.vm_idle_timeout == 0:
+            logger.info("Auto-cull disabled (vm_idle_timeout=0)")
+            return
+
+        while True:
+            await asyncio.sleep(_CULL_INTERVAL)
+            culled = 0
+            now = time.monotonic()
+
+            async with self._acquire_lock:
+                for vm in list(self._vms.values()):
+                    if vm.state != VMState.ASSIGNED:
+                        continue
+                    if vm.assigned_at is None:
+                        continue
+                    age = now - vm.assigned_at
+                    if age <= self._config.vm_idle_timeout:
+                        continue
+
+                    logger.warning(
+                        "Auto-culling VM %s (assigned %.0fs ago, timeout=%ds)",
+                        vm.vm_id,
+                        age,
+                        self._config.vm_idle_timeout,
+                    )
+
+                    try:
+                        vm.transition_to(VMState.STOPPING)
+                    except ValueError:
+                        logger.debug("VM %s already stopping, skipping cull", vm.vm_id)
+                        continue
+
+                    try:
+                        from .vsock import vsock_request
+
+                        await asyncio.wait_for(
+                            vsock_request(
+                                vm.vsock_path,
+                                {"action": "signal", "signum": 15},
+                                timeout=5,
+                            ),
+                            timeout=5,
+                        )
+                        await asyncio.sleep(5)
+                    except Exception as exc:
+                        logger.debug(
+                            "Vsock signal to %s failed (continuing): %s", vm.vm_id, exc
+                        )
+
+                    await self._destroy_vm(vm)
+                    del self._vms[vm.vm_id]
+                    AUTO_CULL_TOTAL.inc()
+                    culled += 1
+
+            if culled:
+                logger.info("Auto-culled %d VM(s), replenishing pool", culled)
+                self._update_vm_gauges()
+                await self.replenish()
 
     async def shutdown(self) -> None:
         """Gracefully stop all VMs."""
