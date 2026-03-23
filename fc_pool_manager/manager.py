@@ -155,6 +155,12 @@ class PoolManager:
             # Use cp --reflink=auto for CoW on supported filesystems (btrfs, xfs)
             await self._run_subprocess("cp", "--reflink=auto", self._config.vm_rootfs, overlay_dest)
 
+            # Jailer drops privileges — files must be owned by the jailer user
+            uid = self._config.jailer_uid
+            gid = self._config.jailer_gid
+            os.chown(kernel_dest, uid, gid)
+            os.chown(overlay_dest, uid, gid)
+
             await self._network.create_tap(short_id)
 
             boot_args = self._config.boot_args_template.replace("{vm_ip}", ip)
@@ -181,12 +187,22 @@ class PoolManager:
             await api.configure_drive("rootfs", "overlay.ext4", is_root=True)
             await api.configure_network("eth0", tap_name, mac)
             await api.configure_vsock(cid, "v.sock")
+            await api.configure_entropy()
             await api.start()
 
+            # Wait for guest agent to start (VM needs time to boot)
             from .vsock import vsock_request
-            resp = await vsock_request(vsock_path, {"action": "ping"}, timeout=30)
-            if resp.get("status") != "alive":
-                raise RuntimeError(f"Guest agent not ready: {resp}")
+            boot_deadline = asyncio.get_event_loop().time() + 30
+            while True:
+                try:
+                    resp = await vsock_request(vsock_path, {"action": "ping"}, timeout=5)
+                    if resp.get("status") == "alive":
+                        break
+                    raise RuntimeError(f"Guest agent not ready: {resp}")
+                except (ConnectionError, OSError):
+                    if asyncio.get_event_loop().time() > boot_deadline:
+                        raise RuntimeError("Guest agent did not start within 30s")
+                    await asyncio.sleep(0.5)
 
             vm.transition_to(VMState.IDLE)
             logger.info("VM %s booted (ip=%s, cid=%d)", vm_id, ip, cid)

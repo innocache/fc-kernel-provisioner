@@ -117,7 +117,7 @@ wait_for_services() {
         fi
 
         if [[ "$gw_ready" == "false" ]]; then
-            if ssh "$HOST" "curl -sf http://localhost:8888/api/kernels" &>/dev/null; then
+            if ssh "$HOST" "curl -sf http://localhost:8888/api" &>/dev/null; then
                 gw_ready=true
                 info "Kernel Gateway is ready ✓"
             fi

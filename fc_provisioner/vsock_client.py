@@ -18,7 +18,6 @@ HEADER_FMT = "!I"
 HEADER_SIZE = struct.calcsize(HEADER_FMT)
 MAX_MESSAGE_SIZE = 1 * 1024 * 1024  # 1 MiB
 
-
 def _encode_message(msg: dict[str, Any]) -> bytes:
     """Encode a dict as length-prefixed JSON."""
     payload = json.dumps(msg).encode()

@@ -106,6 +106,7 @@ class TestFirecrackerProvisioner:
         msg = call_args[0][1]
         assert msg["action"] == "start_kernel"
         assert msg["key"] == "test-hmac-key"
+        assert msg["ip"] == "172.16.0.2"
 
     async def test_cleanup_releases_vm(self, provisioner):
         provisioner.vm_id = "vm-abc12345"

@@ -123,6 +123,29 @@ class TestHandleMessageEdgeCases:
 
         assert response["status"] == "ready"
 
+    def test_start_kernel_timeout_includes_log_tail(self):
+        mod = self._get_fresh_mod()
+        mock_proc = MagicMock()
+        mock_proc.pid = 201
+        mock_proc.poll.return_value = None
+
+        msg = {
+            "action": "start_kernel",
+            "ports": {"shell_port": 5555},
+            "key": "abc",
+            "ip": "172.16.0.2",
+        }
+
+        with patch("subprocess.Popen", return_value=mock_proc), \
+             patch.object(mod, "wait_for_kernel_ports", side_effect=RuntimeError("kernel ports did not open")), \
+             patch.object(mod, "read_log_tail", return_value="Traceback: boom"), \
+             patch("time.sleep"):
+            response = _decode(mod.handle_message(_encode(msg)))
+
+        assert response["status"] == "error"
+        assert "kernel ports did not open" in response["message"]
+        assert "Traceback: boom" in response["message"]
+
     def test_restart_kills_existing_then_starts(self):
         """restart_kernel should terminate existing kernel first."""
         mod = self._get_fresh_mod()
@@ -141,7 +164,8 @@ class TestHandleMessageEdgeCases:
             "key": "xyz",
         }
 
-        with patch("subprocess.Popen", return_value=new_proc), patch("time.sleep"):
+        with patch("subprocess.Popen", return_value=new_proc), patch("time.sleep"), \
+             patch.object(mod, "wait_for_kernel_ports"):
             response = _decode(mod.handle_message(_encode(msg)))
 
         old_proc.terminate.assert_called_once()
@@ -263,15 +287,31 @@ class TestWriteConnectionFileEdgeCases:
         conn_file.write_text("old content")
 
         ports = {"shell_port": 5555}
-        mod.write_connection_file(str(conn_file), ports, "key1")
+        mod.write_connection_file(str(conn_file), ports, "key1", ip="172.16.0.9")
 
         data = json.loads(conn_file.read_text())
         assert data["key"] == "key1"
+        assert data["ip"] == "0.0.0.0"
         assert data["shell_port"] == 5555
 
     def test_empty_key_is_valid(self, tmp_path):
         mod = load_agent_module()
         conn_file = tmp_path / "kernel.json"
-        mod.write_connection_file(str(conn_file), {}, "")
+        mod.write_connection_file(str(conn_file), {}, "", ip="172.16.0.2")
         data = json.loads(conn_file.read_text())
         assert data["key"] == ""
+
+    def test_handle_message_forwards_ip_to_start_kernel(self):
+        mod = load_agent_module()
+        msg = _encode({
+            "action": "start_kernel",
+            "ports": {"shell_port": 5555},
+            "key": "abc123",
+            "ip": "172.16.0.2",
+        })
+
+        with patch.object(mod, "start_kernel", return_value=12345) as mock_start:
+            response = _decode(mod.handle_message(msg))
+
+        mock_start.assert_called_once_with({"shell_port": 5555}, "abc123", "172.16.0.2")
+        assert response["status"] == "ready"

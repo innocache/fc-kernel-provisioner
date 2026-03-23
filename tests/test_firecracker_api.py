@@ -38,3 +38,7 @@ class TestFirecrackerAPI:
         body = api._vsock_body(cid=3, uds_path="v.sock")
         assert body["guest_cid"] == 3
         assert body["uds_path"] == "v.sock"
+
+    def test_build_entropy(self, api):
+        body = api._entropy_body()
+        assert body == {}

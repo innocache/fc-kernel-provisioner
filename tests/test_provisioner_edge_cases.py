@@ -111,6 +111,23 @@ class TestProvisionerLaunchEdgeCases:
         assert result["shell_port"] == 5555
         assert result["hb_port"] == 5559
 
+    @patch("fc_provisioner.provisioner.vsock_request")
+    async def test_launch_kernel_decodes_bytes_session_key(self, mock_vsock):
+        """Byte session keys should be decoded to text for Jupyter connection files."""
+        p = make_provisioner(
+            vm_id="vm-test",
+            vm_ip="172.16.0.99",
+            vsock_path="/tmp/v.sock",
+            pool_client=MagicMock(),
+        )
+        p.connection_info["key"] = b"test-key"
+        mock_vsock.return_value = {"status": "ready", "pid": 42}
+
+        await p.launch_kernel(cmd=[])
+
+        msg = mock_vsock.call_args[0][1]
+        assert msg["key"] == "test-key"
+
 
 class TestProvisionerCleanupEdgeCases:
     async def test_cleanup_without_pool_client_is_safe(self):

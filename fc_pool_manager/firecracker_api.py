@@ -52,6 +52,9 @@ class FirecrackerAPI:
     def _vsock_body(self, cid: int, uds_path: str) -> dict:
         return {"guest_cid": cid, "uds_path": uds_path}
 
+    def _entropy_body(self) -> dict:
+        return {}
+
     async def configure_machine(self, vcpu: int, mem_mib: int) -> None:
         await self._put("/machine-config", self._machine_config_body(vcpu, mem_mib))
 
@@ -69,6 +72,9 @@ class FirecrackerAPI:
 
     async def configure_vsock(self, cid: int, uds_path: str) -> None:
         await self._put("/vsock", self._vsock_body(cid, uds_path))
+
+    async def configure_entropy(self) -> None:
+        await self._put("/entropy", self._entropy_body())
 
     async def start(self) -> None:
         await self._put("/actions", {"action_type": "InstanceStart"})

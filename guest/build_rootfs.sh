@@ -79,7 +79,7 @@ echo "==> Bootstrapping Alpine into $ROOTFS_DIR"
     --repository "${ALPINE_MIRROR}/v${ALPINE_VERSION}/community" \
     --allow-untrusted \
     add alpine-base python3 py3-pip py3-numpy py3-scipy \
-        py3-matplotlib py3-pandas iproute2
+        py3-matplotlib py3-pandas iproute2 haveged
 
 # Set up DNS resolution for chroot (needed for pip downloads)
 cp /etc/resolv.conf "$ROOTFS_DIR/etc/resolv.conf" 2>/dev/null || true

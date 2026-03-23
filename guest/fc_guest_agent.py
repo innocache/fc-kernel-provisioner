@@ -19,6 +19,7 @@ import time
 
 VSOCK_PORT = 52
 VSOCK_CID_ANY = 0xFFFFFFFF
+AF_VSOCK = getattr(socket, "AF_VSOCK", 40)
 HEADER_FMT = "!I"
 MAX_MESSAGE_SIZE = 1 * 1024 * 1024  # 1 MiB
 
@@ -30,9 +31,26 @@ boot_time = time.monotonic()
 # ---------------------------------------------------------------------------
 
 _CONN_FILE = "/tmp/kernel_connection.json"
+_KERNEL_LOG = "/tmp/ipykernel.log"
 
 
-def write_connection_file(path: str, ports: dict, key: str) -> None:
+def read_log_tail(path: str, limit: int = 40) -> str:
+    try:
+        with open(path, "r", errors="replace") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return ""
+    return "".join(lines[-limit:]).strip()
+
+
+def with_log_context(message: str) -> str:
+    log_tail = read_log_tail(_KERNEL_LOG)
+    if not log_tail:
+        return message
+    return f"{message}\n--- ipykernel log tail ---\n{log_tail}"
+
+
+def write_connection_file(path: str, ports: dict, key: str, ip: str) -> None:
     """Write a Jupyter kernel connection file to *path*."""
     data = {
         "ip": "0.0.0.0",
@@ -46,7 +64,30 @@ def write_connection_file(path: str, ports: dict, key: str) -> None:
         json.dump(data, fh)
 
 
-def start_kernel(ports: dict, key: str) -> int:
+def wait_for_kernel_ports(ip: str, ports: dict, timeout: float = 90.0) -> None:
+    deadline = time.monotonic() + timeout
+    pending = list(ports.values())
+
+    while time.monotonic() < deadline:
+        remaining = []
+        for port in pending:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(0.5)
+            try:
+                sock.connect((ip, port))
+            except OSError:
+                remaining.append(port)
+            finally:
+                sock.close()
+        if not remaining:
+            return
+        pending = remaining
+        time.sleep(0.2)
+
+    raise RuntimeError(f"kernel ports did not open within {timeout}s: {pending}")
+
+
+def start_kernel(ports: dict, key: str, ip: str) -> int:
     """Kill any existing kernel, write connection file, spawn ipykernel.
 
     Returns the PID of the new kernel process.
@@ -62,23 +103,38 @@ def start_kernel(ports: dict, key: str) -> int:
             kernel_proc.wait()
         kernel_proc = None
 
-    write_connection_file(_CONN_FILE, ports, key)
+    write_connection_file(_CONN_FILE, ports, key, ip)
 
+    python = sys.executable or "/usr/bin/python3"
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONHASHSEED"] = "0"
+    kernel_log = open(_KERNEL_LOG, "ab")
     kernel_proc = subprocess.Popen(
         [
-            sys.executable,
+            python,
+            "-u",
             "-m",
             "ipykernel_launcher",
             "-f",
             _CONN_FILE,
         ],
         start_new_session=True,
+        env=env,
+        stdout=kernel_log,
+        stderr=subprocess.STDOUT,
     )
+    kernel_log.close()
 
     # Brief wait to detect immediate crashes.
     time.sleep(0.5)
     if kernel_proc.poll() is not None:
-        raise RuntimeError(f"ipykernel exited immediately with code {kernel_proc.poll()}")
+        raise RuntimeError(with_log_context(f"ipykernel exited immediately with code {kernel_proc.poll()}"))
+
+    try:
+        wait_for_kernel_ports(ip, ports)
+    except Exception as exc:
+        raise RuntimeError(with_log_context(str(exc))) from exc
 
     return kernel_proc.pid
 
@@ -131,8 +187,9 @@ def handle_message(data: bytes) -> bytes:
     if action in ("start_kernel", "restart_kernel"):
         ports = msg.get("ports", {})
         key = msg.get("key", "")
+        ip = msg.get("ip", "127.0.0.1")
         try:
-            pid = start_kernel(ports, key)
+            pid = start_kernel(ports, key, ip)
             return _encode_response({"status": "ready", "pid": pid})
         except Exception as exc:
             return _encode_response({"status": "error", "message": str(exc)})
@@ -163,7 +220,7 @@ def handle_message(data: bytes) -> bytes:
 
 def main() -> None:  # pragma: no cover
     """Listen on AF_VSOCK and handle incoming messages."""
-    srv = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
+    srv = socket.socket(AF_VSOCK, socket.SOCK_STREAM)
     srv.bind((VSOCK_CID_ANY, VSOCK_PORT))
     srv.listen(5)
     print(f"[guest-agent] listening on vsock port {VSOCK_PORT}", flush=True)

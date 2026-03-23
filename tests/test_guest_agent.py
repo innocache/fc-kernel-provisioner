@@ -84,7 +84,7 @@ class TestWriteConnectionFile:
             "hb_port": 5559,
         }
         key = "test-key-abc"
-        mod.write_connection_file(str(conn_file), ports, key)
+        mod.write_connection_file(str(conn_file), ports, key, ip="172.16.0.2")
 
         assert conn_file.exists(), "Connection file was not created"
         data = json.loads(conn_file.read_text())
@@ -139,14 +139,18 @@ class TestHandleMessage:
                 "hb_port": 5559,
             },
             "key": "abc123",
+            "ip": "172.16.0.2",
         }
 
-        with patch("subprocess.Popen", return_value=mock_proc), \
-             patch("time.sleep"):
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
+             patch("time.sleep"), \
+             patch.object(mod, "wait_for_kernel_ports") as mock_wait:
             response = _decode(mod.handle_message(_encode(msg)))
 
         assert response["status"] == "ready"
         assert response["pid"] == 12345
+        mock_wait.assert_called_once_with("172.16.0.2", msg["ports"])
+        assert mock_popen.call_args.kwargs["env"]["PYTHONHASHSEED"] == "0"
 
     def test_ping_response(self):
         mod = self._get_fresh_mod()
@@ -181,7 +185,8 @@ class TestHandleMessage:
         }
 
         with patch("subprocess.Popen", return_value=new_proc), \
-             patch("time.sleep"):
+             patch("time.sleep"), \
+             patch.object(mod, "wait_for_kernel_ports"):
             response = _decode(mod.handle_message(_encode(msg)))
 
         old_proc.terminate.assert_called_once()

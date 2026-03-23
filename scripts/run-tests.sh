@@ -41,8 +41,7 @@ pool_running() {
 }
 
 gateway_running() {
-    curl -sf http://localhost:8888/api/status &>/dev/null 2>&1 || \
-    curl -sf http://localhost:8888/api/kernels &>/dev/null 2>&1
+    curl -sf http://localhost:8888/api &>/dev/null 2>&1
 }
 
 # ── Auto-detect ──────────────────────────────────────────────────────────────

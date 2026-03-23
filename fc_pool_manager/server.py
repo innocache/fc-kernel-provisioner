@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import logging
+import os
 import signal
 
 from aiohttp import web
@@ -88,6 +89,9 @@ async def run_server(config_path: str, socket_path: str) -> None:
     await runner.setup()
     site = web.UnixSite(runner, socket_path)
     await site.start()
+
+    # Allow non-root processes (e.g. Kernel Gateway) to connect
+    os.chmod(socket_path, 0o666)
 
     logger.info("Pool manager listening on %s", socket_path)
 

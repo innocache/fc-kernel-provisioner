@@ -3,9 +3,10 @@
 import asyncio
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 from fc_pool_manager.manager import PoolManager
 from fc_pool_manager.config import PoolConfig
+from fc_pool_manager.firecracker_api import FirecrackerAPI
 from fc_pool_manager.vm import VMInstance, VMState
 
 
@@ -262,7 +263,6 @@ class TestIsAlive:
 
     @patch("fc_pool_manager.vsock.vsock_request", new_callable=AsyncMock)
     async def test_is_alive_unexpected_response(self, mock_vsock, manager):
-        """Guest responds but with unexpected status."""
         mock_vsock.return_value = {"status": "confused", "uptime": 0}
         manager._vms["vm-1"] = make_vm()
         result = await manager.is_alive("vm-1")

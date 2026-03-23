@@ -50,7 +50,8 @@ class FirecrackerProvisioner(KernelProvisionerBase):
     process: Optional[FirecrackerProcess] = None
     pool_client: Optional[PoolClient] = None
 
-    KERNEL_PORTS = {
+    PORT_NAMES = ("shell_port", "iopub_port", "stdin_port", "control_port", "hb_port")
+    _DEFAULT_PORTS = {
         "shell_port": 5555,
         "iopub_port": 5556,
         "stdin_port": 5557,
@@ -78,16 +79,50 @@ class FirecrackerProvisioner(KernelProvisionerBase):
         self.vsock_path = vm["vsock_path"]
 
         kwargs["cmd"] = []
-        return await super().pre_launch(**kwargs)
+        result = await super().pre_launch(**kwargs)
+
+        # Populate connection_info so that the dict returned from launch_kernel
+        # matches what KernelManager.get_connection_info() produces after
+        # _reconcile_connection_info loads it.  The key must be bytes and
+        # signature_scheme must be present, otherwise the equality check in
+        # _equal_connections fails (str != bytes, None != "hmac-sha256").
+        self.connection_info["ip"] = self.vm_ip
+        self.connection_info["transport"] = "tcp"
+        if hasattr(self, "parent") and hasattr(self.parent, "session"):
+            self.connection_info["key"] = self.parent.session.key
+            self.connection_info["signature_scheme"] = (
+                self.parent.session.signature_scheme
+            )
+        return result
+
+    def _kernel_ports(self) -> dict[str, int]:
+        """Extract kernel port assignments from connection_info (set by KernelManager).
+
+        Falls back to default fixed ports when called outside the full KM flow
+        (e.g. in unit tests or direct usage).
+        """
+        return {k: self.connection_info.get(k, self._DEFAULT_PORTS[k]) for k in self.PORT_NAMES}
+
+    def _connection_key_text(self) -> str:
+        key = self.connection_info.get("key", "")
+        if isinstance(key, bytes):
+            return key.decode()
+        return key
 
     async def _start_guest_kernel(self) -> None:
         """Send start_kernel to guest agent and update connection info."""
-        key = self.connection_info.get("key", "")
+        if self.vsock_path is None:
+            raise RuntimeError("Cannot start guest kernel without a vsock path")
+        if self.vm_id is None or self.pool_client is None:
+            raise RuntimeError("Cannot start guest kernel before VM acquisition")
+
+        key = self._connection_key_text()
+        ports = self._kernel_ports()
 
         resp = await vsock_request(
             self.vsock_path,
-            {"action": "start_kernel", "ports": self.KERNEL_PORTS, "key": key},
-            timeout=30,
+            {"action": "start_kernel", "ports": ports, "key": key, "ip": self.vm_ip},
+            timeout=120,
         )
 
         if resp.get("status") != "ready":
@@ -96,9 +131,10 @@ class FirecrackerProvisioner(KernelProvisionerBase):
                 f"Guest agent failed to start kernel: {error_msg}"
             )
 
-        self.connection_info["ip"] = self.vm_ip
+        if self.vm_ip:
+            self.connection_info["ip"] = self.vm_ip
         self.connection_info["transport"] = "tcp"
-        self.connection_info.update(self.KERNEL_PORTS)
+        self.connection_info.update(ports)
         self.process = FirecrackerProcess(self.vm_id, self.pool_client)
 
     async def launch_kernel(self, cmd: list[str], **kwargs) -> dict[str, Any]:
@@ -109,6 +145,7 @@ class FirecrackerProvisioner(KernelProvisionerBase):
     async def launch_process(self, cmd: list[str], **kwargs) -> FirecrackerProcess:
         """Alias kept for backward compatibility / direct testing."""
         await self._start_guest_kernel()
+        assert self.process is not None
         return self.process
 
     @property
@@ -144,14 +181,16 @@ class FirecrackerProvisioner(KernelProvisionerBase):
 
     async def cleanup(self, restart: bool = False):
         if restart and self.vsock_path:
+            if self.vm_id is None or self.pool_client is None:
+                raise RuntimeError("Cannot restart guest kernel before VM acquisition")
             resp = await vsock_request(
                 self.vsock_path,
                 {
                     "action": "restart_kernel",
-                    "ports": self.KERNEL_PORTS,
-                    "key": self.connection_info.get("key", ""),
+                    "ports": self._kernel_ports(),
+                    "key": self._connection_key_text(),
                 },
-                timeout=30,
+                timeout=120,
             )
             if resp.get("status") != "ready":
                 error_msg = resp.get("message") or resp.get("error") or "unknown"

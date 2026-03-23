@@ -13,6 +13,10 @@ ip link set lo up
 # Just need to bring the link up
 ip link set eth0 up
 
+if command -v haveged >/dev/null 2>&1; then
+    haveged -w 1024 >/tmp/haveged.log 2>&1 &
+fi
+
 # Supervisor loop: restart guest agent if it crashes.
 # PID 1 must not exit or the kernel panics.
 while true; do

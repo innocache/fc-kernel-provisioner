@@ -211,7 +211,7 @@ ssh -f "$HOST" "cd $REMOTE_DIR && nohup sudo uv run python -m fc_pool_manager.se
 
 # Start Kernel Gateway in background
 step "Starting Kernel Gateway..."
-ssh -f "$HOST" "cd $REMOTE_DIR && nohup uv run jupyter kernelgateway --KernelGatewayApp.default_kernel_name=python3-firecracker --KernelGatewayApp.port=8888 --ServerApp.token='' --ServerApp.disable_check_xsrf=True </dev/null >/tmp/fc-kernel-gateway.log 2>&1"
+ssh -f "$HOST" "cd $REMOTE_DIR && nohup sudo uv run jupyter kernelgateway --KernelGatewayApp.default_kernel_name=python3-firecracker --KernelGatewayApp.port=8888 --KernelGatewayApp.list_kernels=True </dev/null >/tmp/fc-kernel-gateway.log 2>&1"
 
 # Poll until services are ready (timeout 120s)
 step "Waiting for services to be ready (timeout 120s)..."
@@ -229,7 +229,7 @@ while [[ $ELAPSED -lt $TIMEOUT ]]; do
     fi
 
     if [[ "$GW_READY" == "false" ]]; then
-        if ssh "$HOST" "curl -sf http://localhost:8888/api/kernels" &>/dev/null; then
+        if ssh "$HOST" "curl -sf http://localhost:8888/api" &>/dev/null; then
             GW_READY=true
             info "Kernel Gateway is ready ✓"
         fi
@@ -263,7 +263,7 @@ fi
 info "Unit tests passed ✓"
 
 step "Running smoke test..."
-ssh "$HOST" "cd $REMOTE_DIR && ./scripts/run-tests.sh smoke" || TEST_RC=$?
+ssh "$HOST" "cd $REMOTE_DIR && sudo ./scripts/run-tests.sh smoke" || TEST_RC=$?
 
 if [[ $TEST_RC -ne 0 ]]; then
     fail "Smoke test failed (exit code $TEST_RC)"

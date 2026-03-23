@@ -56,8 +56,11 @@ class NetworkManager:
         self.ip_allocator = IPAllocator(gateway=gateway, start=vm_ip_start, end=vm_ip_end)
 
     def _tap_name(self, short_id: str) -> str:
-        """Generate TAP device name from the short UUID hex (8 chars)."""
-        return f"tap-{short_id}"
+        """Generate TAP device name from the short UUID hex.
+
+        Linux interface names are limited to 15 chars (IFNAMSIZ - 1).
+        """
+        return f"tap-{short_id[:11]}"
 
     def _mac_from_ip(self, ip: str) -> str:
         """Generate a deterministic MAC address from the VM IP."""
