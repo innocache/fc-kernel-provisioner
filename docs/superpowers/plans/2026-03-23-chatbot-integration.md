@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-03-23-chatbot-integration-design.md`
 
-**Status:** All tasks complete. 55 unit tests + 5 integration tests passing. 336 total unit tests pass (zero regressions).
+**Status:** All tasks complete. 59 Execution API unit tests + 5 Execution API integration tests passing. Full suite verification on remote host: 340 unit tests + 22 integration tests passing.
 
 | Chunk | Status |
 |-------|--------|
@@ -1716,4 +1716,4 @@ git commit -m "test(api): add Execution API integration tests"
 - [ ] **Step 4: Run full test suite on remote host**
 
 Run: `./scripts/remote-test.sh xuwang@192.168.1.53 --skip-setup`
-Expected: All unit tests pass, integration tests pass (including new Execution API tests when the API server is running)
+Expected: All unit tests pass, integration tests pass (including new Execution API tests; `remote-test.sh` now starts the API server automatically)

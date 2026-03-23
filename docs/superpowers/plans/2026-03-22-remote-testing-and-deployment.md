@@ -941,7 +941,7 @@ Host fc-test
 
 1. **Sync** — rsync project to `~/fc-kernel-provisioner` on remote host
 2. **Setup** — install Firecracker, Python deps, rootfs, network bridge (skipped with `--skip-setup`)
-3. **Start services** — pool manager + Kernel Gateway in background, poll until ready (120s timeout)
+3. **Start services** — pool manager + Kernel Gateway + Execution API in background, poll until ready (120s timeout)
 4. **Run tests** — unit → smoke → integration (or just unit with `--unit-only`)
 5. **Teardown** — kill services, remove socket, clean up leftover VMs
 

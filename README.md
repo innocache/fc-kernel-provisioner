@@ -56,7 +56,7 @@ fc-kernel-provisioner/
 │   ├── output.py           # OutputParser, ExecutionResult, DisplayOutput
 │   └── artifact_store.py   # ArtifactStore protocol, LocalArtifactStore
 │
-└── tests/                   # 281 unit + 17 integration tests
+└── tests/                   # 340 unit + 22 integration tests
 ```
 
 ## Requirements
@@ -185,7 +185,7 @@ jailer:
 See [docs/testing.md](docs/testing.md) for the full testing plan.
 
 ```bash
-# Unit tests (281 tests, no KVM required)
+# Unit tests (340 tests, no KVM required)
 uv run pytest tests/ -v -m "not integration"
 
 # Smoke test (requires running services)
@@ -200,6 +200,8 @@ uv run pytest tests/ -v -m "not integration"
 ```bash
 # Run full test suite on a remote KVM host
 ./scripts/remote-test.sh user@host
+
+# Starts pool manager, Kernel Gateway, and Execution API automatically
 
 # Deploy as systemd services
 ./scripts/deploy.sh user@host deploy

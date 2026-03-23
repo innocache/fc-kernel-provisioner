@@ -84,9 +84,11 @@ Options:
    - Install kernelspec: `sudo uv run jupyter kernelspec install config/kernelspec/ --name python3-firecracker --sys-prefix`
    - Pool manager: `sudo uv run python -m fc_pool_manager.server --config config/fc-pool.yaml --socket /var/run/fc-pool.sock -v`
    - Kernel Gateway: `uv run jupyter kernelgateway --KernelGatewayApp.default_kernel_name=python3-firecracker --KernelGatewayApp.port=8888`
+   - Execution API: `uv run python -m execution_api.server` (port 8000)
    - Poll until ready (timeout 120s):
      - Pool manager: `curl -s --unix-socket /var/run/fc-pool.sock http://localhost/api/pool/status` returns HTTP 200
      - Kernel Gateway: `curl -sf http://localhost:8888/api/kernels` returns HTTP 200
+     - Execution API: `curl -sf http://localhost:8000/openapi.json` returns HTTP 200
    - The 120s timeout accounts for first-run pool pre-warming; subsequent runs are faster
 
 4. **Run tests**:
@@ -97,7 +99,7 @@ Options:
 
 5. **Teardown** (always runs, even on test failure; skipped with `--keep-services`):
    - Capture the test exit code before teardown begins
-   - Kill pool manager and Kernel Gateway processes
+   - Kill pool manager, Kernel Gateway, and Execution API processes
    - Remove Unix socket file (`/var/run/fc-pool.sock`)
    - Clean up leftover VMs (kill jailer processes, remove TAP devices, delete jail dirs under `/srv/jailer/`)
    - Implementation: use `trap 'RC=$?; teardown; exit $RC' EXIT` to preserve the test exit code even if teardown commands fail
@@ -110,6 +112,7 @@ Options:
 |----------|-----------|
 | Firecracker binaries | Pool manager process |
 | Linux kernel (`vmlinux`) | Kernel Gateway process |
+| Project code + Python venv | Execution API process |
 | Rootfs image | Unix socket file |
 | Network bridge (`fcbr0`) | Running VMs / jailer processes |
 | System deps (apt packages) | TAP devices |

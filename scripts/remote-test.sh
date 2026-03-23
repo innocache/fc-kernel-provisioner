@@ -157,6 +157,11 @@ if pgrep -f "jupyter-kernelgateway" >/dev/null 2>&1; then
     echo "  Killed Kernel Gateway"
 fi
 
+if pgrep -f "python -m execution_api.server" >/dev/null 2>&1; then
+    pkill -f "python -m execution_api.server" 2>/dev/null
+    echo "  Killed Execution API"
+fi
+
 # Remove socket
 sudo rm -f /var/run/fc-pool.sock
 echo "  Removed socket"
@@ -213,12 +218,16 @@ ssh -f "$HOST" "cd $REMOTE_DIR && nohup sudo uv run python -m fc_pool_manager.se
 step "Starting Kernel Gateway..."
 ssh -f "$HOST" "cd $REMOTE_DIR && nohup sudo uv run jupyter kernelgateway --KernelGatewayApp.default_kernel_name=python3-firecracker --KernelGatewayApp.port=8888 --KernelGatewayApp.list_kernels=True </dev/null >/tmp/fc-kernel-gateway.log 2>&1"
 
+step "Starting Execution API..."
+ssh -f "$HOST" "cd $REMOTE_DIR && nohup uv run python -m execution_api.server </dev/null >/tmp/fc-execution-api.log 2>&1"
+
 # Poll until services are ready (timeout 120s)
 step "Waiting for services to be ready (timeout 120s)..."
 TIMEOUT=120
 ELAPSED=0
 POOL_READY=false
 GW_READY=false
+API_READY=false
 
 while [[ $ELAPSED -lt $TIMEOUT ]]; do
     if [[ "$POOL_READY" == "false" ]]; then
@@ -235,7 +244,14 @@ while [[ $ELAPSED -lt $TIMEOUT ]]; do
         fi
     fi
 
-    if [[ "$POOL_READY" == "true" && "$GW_READY" == "true" ]]; then
+    if [[ "$API_READY" == "false" ]]; then
+        if ssh "$HOST" "curl -sf http://localhost:8000/openapi.json" &>/dev/null; then
+            API_READY=true
+            info "Execution API is ready ✓"
+        fi
+    fi
+
+    if [[ "$POOL_READY" == "true" && "$GW_READY" == "true" && "$API_READY" == "true" ]]; then
         break
     fi
 
@@ -243,10 +259,11 @@ while [[ $ELAPSED -lt $TIMEOUT ]]; do
     ELAPSED=$((ELAPSED + 2))
 done
 
-if [[ "$POOL_READY" != "true" || "$GW_READY" != "true" ]]; then
+if [[ "$POOL_READY" != "true" || "$GW_READY" != "true" || "$API_READY" != "true" ]]; then
     fail "Services did not become ready within ${TIMEOUT}s"
     [[ "$POOL_READY" != "true" ]] && fail "Pool manager not ready — check /tmp/fc-pool-manager.log on remote host"
     [[ "$GW_READY" != "true" ]] && fail "Kernel Gateway not ready — check /tmp/fc-kernel-gateway.log on remote host"
+    [[ "$API_READY" != "true" ]] && fail "Execution API not ready — check /tmp/fc-execution-api.log on remote host"
     TEST_RC=1
     exit 1  # Triggers trap → teardown → exit $TEST_RC
 fi
@@ -272,7 +289,7 @@ fi
 info "Smoke test passed ✓"
 
 step "Running integration tests..."
-ssh "$HOST" "cd $REMOTE_DIR && uv run pytest tests/test_integration.py -v -m integration --tb=long -s" || TEST_RC=$?
+ssh "$HOST" "cd $REMOTE_DIR && EXECUTION_API_URL=http://localhost:8000 uv run pytest tests/test_integration.py -v -m integration --tb=long -s" || TEST_RC=$?
 
 if [[ $TEST_RC -ne 0 ]]; then
     fail "Integration tests failed (exit code $TEST_RC)"
