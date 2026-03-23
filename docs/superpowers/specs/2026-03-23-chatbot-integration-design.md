@@ -54,11 +54,17 @@ Four files, each under ~150 lines. `server.py` imports from `sandbox_client` —
 
 | Endpoint | Method | Request | Response | Purpose |
 |----------|--------|---------|----------|---------|
-| `POST /sessions` | POST | `{"timeout": 30}` (optional) | `{"session_id": "...", "created_at": "..."}` | Create a sandbox session |
+| `POST /sessions` | POST | `{"execution_timeout": 30}` (optional) | `{"session_id": "...", "created_at": "2026-03-23T12:00:00Z"}` | Create a sandbox session |
 | `POST /sessions/{id}/execute` | POST | `{"code": "..."}` | `ExecuteResponse` (see below) | Execute code in session |
 | `DELETE /sessions/{id}` | DELETE | — | `{"ok": true}` | Destroy session |
-| `GET /sessions` | GET | — | `[{"session_id": "...", "created_at": "...", "last_active": "..."}]` | List active sessions |
+| `GET /sessions` | GET | — | `[{"session_id": "...", "created_at": "2026-...", "last_active": "2026-..."}]` | List active sessions |
 | `POST /execute` | POST | `{"code": "...", "timeout": 30}` | `ExecuteResponse` | One-shot: create + execute + destroy |
+
+`POST /sessions` accepts an optional `execution_timeout` (seconds) that overrides the server's `DEFAULT_TIMEOUT` for all `execute()` calls within this session. The server-wide `SESSION_TTL` (idle timeout for cleanup) is not configurable per-session.
+
+`POST /execute` accepts `timeout` which is passed directly to `SandboxSession.execute()` as the execution timeout. It does not limit session creation/teardown time.
+
+All datetime fields in API responses use ISO 8601 format (e.g., `"2026-03-23T12:00:00Z"`). Internally stored as `float` (Unix timestamp), converted by Pydantic serialization.
 
 ### Execute Response Format
 
@@ -85,6 +91,18 @@ Four files, each under ~150 lines. `server.py` imports from `sandbox_client` —
 ```
 
 Binary outputs (PNG) are base64-encoded as `data_b64`. Text outputs are inline as `data`. If an artifact store is configured, `url` is also populated.
+
+### Output Item Pydantic Model
+
+```python
+class OutputItem(BaseModel):
+    mime_type: str
+    data: str | None = None       # text outputs (HTML, SVG, JSON, plain text)
+    data_b64: str | None = None   # binary outputs (PNG), base64-encoded
+    url: str | None = None        # populated when ArtifactStore is configured
+```
+
+Exactly one of `data` or `data_b64` is populated per output item. The server checks `isinstance(display_output.data, bytes)` to decide which field to use.
 
 ### Error Response
 
@@ -117,10 +135,10 @@ class SessionEntry:
 ```
 
 - Session IDs are UUID4
-- Background task runs every 60 seconds, destroys sessions idle longer than TTL
+- Background task runs every 60 seconds, destroys sessions idle longer than TTL. Cleanup calls `session.stop()` with errors suppressed — the entry is removed regardless of whether `stop()` succeeds (same pattern as `SandboxSession.__aexit__`).
 - `POST /sessions` returns 503 if max sessions reached
-- `DELETE /sessions/{id}` calls `session.stop()` and removes the entry
-- Server shutdown (`lifespan`) destroys all active sessions
+- `DELETE /sessions/{id}` calls `session.stop()` (errors suppressed) and removes the entry
+- Server shutdown (`lifespan`) destroys all active sessions (errors suppressed)
 
 ### One-Shot Endpoint
 
@@ -226,7 +244,11 @@ def format_result(result):
     for i, output in enumerate(result.outputs):
         if output.url:
             parts.append(f"[output {i}]: {output.mime_type} at {output.url}")
+        elif isinstance(output.data, str):
+            # Text outputs (HTML, SVG, JSON) — inline for the LLM
+            parts.append(f"[output {i}]: {output.mime_type}\n{output.data}")
         else:
+            # Binary outputs (PNG) — just report the size
             parts.append(f"[output {i}]: {output.mime_type} ({len(output.data)} bytes)")
     return "\n".join(parts) or "(no output)"
 
@@ -332,7 +354,7 @@ asyncio.run(main())
 
 ### What Both Examples Include
 
-- Full `format_result()` helper: stdout, stderr, errors with name/value, image/output placeholders
+- Full `format_result()` helper: stdout, stderr, errors with name/value, text outputs inlined, binary output size reported
 - Claude tool definition inline
 - Proper error handling (connection errors raised, execution errors in result)
 - Complete and runnable
@@ -381,6 +403,7 @@ Environment variables for the Execution API server:
 | `DEFAULT_TIMEOUT` | `30` | Default code execution timeout in seconds |
 | `ARTIFACT_BASE_DIR` | None (disabled) | Path to artifact storage directory |
 | `ARTIFACT_URL_PREFIX` | None | URL prefix for artifact URLs |
+| `SERVE_ARTIFACTS` | `true` | Serve artifact files via `/artifacts/` endpoint (when artifact store is configured) |
 | `PORT` | `8000` | API server port |
 
 **Running:**
@@ -389,6 +412,16 @@ uv run python -m execution_api.server
 # or with config:
 GATEWAY_URL=http://kg:8888 MAX_SESSIONS=50 uv run python -m execution_api.server
 ```
+
+### Artifact Serving
+
+When `ARTIFACT_BASE_DIR` is set, the Execution API mounts a static file route at `/artifacts/` using FastAPI's `StaticFiles`. Artifact URLs in responses use `ARTIFACT_URL_PREFIX` which defaults to `http://localhost:{PORT}/artifacts` when not explicitly set. This means the API server serves artifact files directly — no separate file server needed.
+
+Example: with `ARTIFACT_BASE_DIR=/var/lib/artifacts` and `PORT=8000`, a PNG output gets:
+- Saved to `/var/lib/artifacts/{session_id}/output_0.png`
+- URL: `http://localhost:8000/artifacts/{session_id}/output_0.png`
+
+For production deployments behind a CDN or reverse proxy, set `ARTIFACT_URL_PREFIX` to the external URL.
 
 ---
 
