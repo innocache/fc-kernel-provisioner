@@ -267,3 +267,98 @@ class TestSandboxClient:
         assert result.success is False
         assert "before" in result.stdout
         assert result.error.name == "RuntimeError"
+
+
+EXECUTION_API_URL = os.environ.get("EXECUTION_API_URL", "http://localhost:8000")
+
+
+class TestExecutionAPI:
+    async def test_api_hello_world(self):
+        async with aiohttp.ClientSession() as http:
+            resp = await http.post(
+                f"{EXECUTION_API_URL}/execute",
+                json={"code": "print('hello')"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["success"] is True
+            assert data["stdout"].strip() == "hello"
+            assert data["error"] is None
+
+    async def test_api_session_lifecycle(self):
+        async with aiohttp.ClientSession() as http:
+            resp = await http.post(f"{EXECUTION_API_URL}/sessions")
+            assert resp.status == 200
+            sid = (await resp.json())["session_id"]
+
+            resp = await http.post(
+                f"{EXECUTION_API_URL}/sessions/{sid}/execute",
+                json={"code": "x = 42"},
+            )
+            assert resp.status == 200
+            assert (await resp.json())["success"] is True
+
+            resp = await http.post(
+                f"{EXECUTION_API_URL}/sessions/{sid}/execute",
+                json={"code": "print(x)"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["stdout"].strip() == "42"
+
+            resp = await http.get(f"{EXECUTION_API_URL}/sessions")
+            assert resp.status == 200
+            sessions = await resp.json()
+            assert any(s["session_id"] == sid for s in sessions)
+
+            resp = await http.delete(
+                f"{EXECUTION_API_URL}/sessions/{sid}",
+            )
+            assert resp.status == 200
+            assert (await resp.json())["ok"] is True
+
+    async def test_api_error_result(self):
+        async with aiohttp.ClientSession() as http:
+            resp = await http.post(
+                f"{EXECUTION_API_URL}/execute",
+                json={"code": "1/0"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["success"] is False
+            assert data["error"]["name"] == "ZeroDivisionError"
+            assert data["error"]["value"] == "division by zero"
+            assert len(data["error"]["traceback"]) > 0
+
+    async def test_api_rich_output(self):
+        async with aiohttp.ClientSession() as http:
+            resp = await http.post(
+                f"{EXECUTION_API_URL}/execute",
+                json={
+                    "code": (
+                        "import matplotlib.pyplot as plt\n"
+                        "plt.plot([1, 2, 3])\n"
+                        "plt.show()"
+                    ),
+                },
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["success"] is True
+            png_outputs = [
+                o for o in data["outputs"]
+                if o["mime_type"] == "image/png"
+            ]
+            assert len(png_outputs) >= 1
+            assert png_outputs[0]["data_b64"] is not None
+            assert len(png_outputs[0]["data_b64"]) > 100
+
+    async def test_api_session_not_found(self):
+        async with aiohttp.ClientSession() as http:
+            resp = await http.post(
+                f"{EXECUTION_API_URL}/sessions/nonexistent/execute",
+                json={"code": "x"},
+            )
+            assert resp.status == 404
+            data = await resp.json()
+            assert data["error"] == "session not found"

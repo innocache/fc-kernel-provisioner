@@ -76,10 +76,10 @@ class SandboxSession:
         self._started = True
 
     async def stop(self) -> None:
-        """Delete the kernel and close connections."""
-        if not self._started:
-            return
+        """Delete the kernel and close connections.
 
+        Safe to call after partial initialisation (e.g. failed start).
+        """
         self._started = False
 
         if self._ws_ctx is not None:
