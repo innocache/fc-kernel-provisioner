@@ -1,0 +1,16 @@
+[
+  {
+    "name": "execute_python_code",
+    "description": "Execute Python code in an isolated Firecracker microVM sandbox. Use this when the user asks you to run code, analyze data, create visualizations, or perform calculations. The sandbox has numpy, pandas, matplotlib, scipy, plotly, and seaborn pre-installed. State persists across calls within the same conversation.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "Python code to execute"
+        }
+      },
+      "required": ["code"]
+    }
+  }
+]
