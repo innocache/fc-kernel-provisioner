@@ -64,6 +64,7 @@ uv run pytest tests/ -v -m "not integration"
 | Output parser | `test_output_parser.py` | Jupyter message parsing → ExecutionResult. Stream/error/display_data/execute_reply handling. Mime bundle priority. Binary (PNG) vs text output. Malformed messages, edge cases |
 | Sandbox session | `test_session.py` | Lifecycle (start/stop/context manager), execute message format, timeout + interrupt, WebSocket error types, artifact store integration, HTTPS→WSS, msg_id filtering |
 | Artifact store | `test_artifact_store.py` | LocalArtifactStore file creation, URL generation, directory creation, overwrite, protocol compliance |
+| Execution API | `test_execution_api.py` | Pydantic models, SessionManager lifecycle + edge cases (TTL cleanup, max sessions, shutdown, startup failure cleanup), result conversion (binary base64, text inline, URLs), all endpoints via httpx AsyncClient (CRUD, execute, one-shot, error responses, 503/404), validation error envelope |
 
 ### Level 2: Smoke Test (manual, requires running services)
 
@@ -91,7 +92,7 @@ End-to-end test: code execution through the entire Firecracker path via the Kern
 uv run pytest tests/test_integration.py -v -m integration
 ```
 
-**17 tests.** Expected to pass in < 2 minutes.
+**22 tests.** Expected to pass in < 2 minutes.
 
 **What's covered:**
 
@@ -99,8 +100,9 @@ uv run pytest tests/test_integration.py -v -m integration
 |-----------|-------|
 | `TestFullPipeline` | hello_world, state persistence, error handling, imports (numpy), multiline output |
 | `TestSandboxClient` | hello_world, state persistence, error handling (with traceback), rich output (matplotlib PNG), HTML output (pandas DataFrame), timeout + interrupt, artifact store (file written + URL), explicit lifecycle (start/stop), error recovery (session reuse after error), execution_count increments, stderr capture, stdout before error |
+| `TestExecutionAPI` | hello_world via REST, session lifecycle (create → execute × 2 → delete, state persists), error result (ZeroDivisionError), rich output (matplotlib base64 PNG), session not found 404 |
 
-**Prerequisites:** Pool manager running, Kernel Gateway running, rootfs built, network configured.
+**Prerequisites:** Pool manager running, Kernel Gateway running, Execution API running, rootfs built, network configured.
 
 ---
 
@@ -141,10 +143,13 @@ uv run jupyter kernelgateway \
     --KernelGatewayApp.default_kernel_name=python3-firecracker \
     --KernelGatewayApp.port=8888
 
-# 9. Run smoke test
+# 9. Start Execution API (terminal 3)
+uv run python -m execution_api.server
+
+# 10. Run smoke test
 ./scripts/run-tests.sh smoke
 
-# 10. Run integration tests
+# 11. Run integration tests
 ./scripts/run-tests.sh integration
 ```
 
@@ -377,7 +382,9 @@ jobs:
           sleep 10
           uv run jupyter kernelgateway --default_kernel_name=python3-firecracker &
           sleep 5
-          uv run pytest tests/test_integration.py -v -m integration
+          uv run python -m execution_api.server &
+          sleep 2
+          EXECUTION_API_URL=http://localhost:8000 uv run pytest tests/test_integration.py -v -m integration
 ```
 
 ---

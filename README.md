@@ -56,6 +56,15 @@ fc-kernel-provisioner/
 │   ├── output.py           # OutputParser, ExecutionResult, DisplayOutput
 │   └── artifact_store.py   # ArtifactStore protocol, LocalArtifactStore
 │
+├── execution_api/          # REST API server for chatbot integration
+│   ├── server.py           # FastAPI app, SessionManager, endpoints
+│   ├── models.py           # Pydantic request/response models
+│   └── tool_schemas/       # Claude and OpenAI tool definitions
+│
+├── examples/               # Runnable chatbot integration examples
+│   ├── oneshot_example.py  # Single-turn Claude + SandboxSession
+│   └── conversation_example.py  # Multi-turn with persistent session
+│
 └── tests/                   # 340 unit + 22 integration tests
 ```
 
@@ -140,6 +149,40 @@ async with SandboxSession("http://localhost:8888", artifact_store=store) as sess
     print(result.outputs[0].url)  # "http://localhost:8080/artifacts/{session_id}/output_0.png"
 ```
 
+## Execution API
+
+A REST API server for chatbot integration. Wraps `SandboxSession` with server-managed sessions:
+
+```bash
+# Start the API server (requires Kernel Gateway running)
+uv run python -m execution_api.server
+```
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `POST /sessions` | POST | Create a sandbox session |
+| `GET /sessions` | GET | List active sessions |
+| `POST /sessions/{id}/execute` | POST | Execute code in session |
+| `DELETE /sessions/{id}` | DELETE | Destroy session |
+| `POST /execute` | POST | One-shot: create + execute + destroy |
+
+```python
+import httpx
+
+# One-shot execution
+resp = httpx.post("http://localhost:8000/execute", json={"code": "print('hello')"})
+print(resp.json()["stdout"])  # "hello\n"
+
+# Session-based (state persists)
+session = httpx.post("http://localhost:8000/sessions").json()
+sid = session["session_id"]
+httpx.post(f"http://localhost:8000/sessions/{sid}/execute", json={"code": "x = 42"})
+resp = httpx.post(f"http://localhost:8000/sessions/{sid}/execute", json={"code": "print(x)"})
+print(resp.json()["stdout"])  # "42\n"
+```
+
+Tool schemas for Claude and OpenAI are in `execution_api/tool_schemas/`. See `examples/` for complete chatbot integration scripts.
+
 ## Pool Manager API
 
 The pool manager exposes a Unix socket HTTP API at `/var/run/fc-pool.sock`:
@@ -221,7 +264,7 @@ sudo ./guest/build_rootfs.sh --clean      # Remove built rootfs image
 
 ## Status
 
-The **core slice** and **sandbox client** are complete: Python code execution inside jailed Firecracker microVMs with structured result capture (stdout, stderr, errors, images, HTML) via the `sandbox_client` library. See [GitHub Issues](https://github.com/innocache/fc-kernel-provisioner/issues) for planned follow-on work.
+The **core slice**, **sandbox client**, and **Execution API** are complete: Python code execution inside jailed Firecracker microVMs with structured result capture (stdout, stderr, errors, images, HTML) via the `sandbox_client` library, and a REST API (`execution_api`) for chatbot integration with server-managed sessions, TTL cleanup, and Claude/OpenAI tool schemas.
 
 ## License
 
