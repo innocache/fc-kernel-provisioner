@@ -70,25 +70,30 @@ class PoolManager:
 
     async def acquire(self, vcpu: int, mem_mib: int) -> dict[str, Any]:
         """Claim an idle VM from the pool."""
-        if vcpu != self._config.vm_vcpu or mem_mib != self._config.vm_mem_mib:
-            raise ValueError(
-                f"Requested resources (vcpu={vcpu}, mem_mib={mem_mib}) "
-                f"do not match pool profile "
-                f"(vcpu={self._config.vm_vcpu}, mem_mib={self._config.vm_mem_mib})"
-            )
-
         t0 = asyncio.get_event_loop().time()
         try:
+            if vcpu != self._config.vm_vcpu or mem_mib != self._config.vm_mem_mib:
+                raise ValueError(
+                    f"Requested resources (vcpu={vcpu}, mem_mib={mem_mib}) "
+                    f"do not match pool profile "
+                    f"(vcpu={self._config.vm_vcpu}, mem_mib={self._config.vm_mem_mib})"
+                )
             result = await self._acquire_inner(vcpu, mem_mib)
             ACQUIRE_DURATION.observe(asyncio.get_event_loop().time() - t0)
             ACQUIRE_TOTAL.labels(result="success").inc()
             self._update_vm_gauges()
             return result
+        except ValueError:
+            ACQUIRE_TOTAL.labels(result="invalid_request").inc()
+            raise
         except RuntimeError as e:
             if "pool_exhausted" in str(e):
                 ACQUIRE_TOTAL.labels(result="exhausted").inc()
             else:
                 ACQUIRE_TOTAL.labels(result="error").inc()
+            raise
+        except Exception:
+            ACQUIRE_TOTAL.labels(result="error").inc()
             raise
 
     async def _acquire_inner(self, vcpu: int, mem_mib: int) -> dict[str, Any]:
@@ -119,19 +124,21 @@ class PoolManager:
 
     async def release(self, vm_id: str, destroy: bool = True) -> None:
         """Release a VM back to the pool or destroy it."""
-        vm = self._vms.get(vm_id)
-        if vm is None:
-            logger.warning("Release called for unknown VM %s", vm_id)
-            return
-
         if destroy:
-            if vm.state != VMState.STOPPING:
-                vm.transition_to(VMState.STOPPING)
+            async with self._acquire_lock:
+                vm = self._vms.pop(vm_id, None)
+                if vm is None:
+                    logger.warning("Release called for unknown VM %s", vm_id)
+                    return
+                if vm.state != VMState.STOPPING:
+                    vm.transition_to(VMState.STOPPING)
             await self._destroy_vm(vm)
-            del self._vms[vm_id]
             logger.info("Destroyed VM %s", vm_id)
         else:
-            # Best-effort reset/stop of the guest before returning to the idle pool.
+            vm = self._vms.get(vm_id)
+            if vm is None:
+                logger.warning("Release called for unknown VM %s", vm_id)
+                return
             try:
                 from .vsock import vsock_request
                 await vsock_request(vm.vsock_path, {"action": "reset"}, timeout=10)
@@ -315,8 +322,8 @@ class PoolManager:
 
         while True:
             await asyncio.sleep(_CULL_INTERVAL)
-            culled = 0
             now = time.monotonic()
+            to_cull: list[VMInstance] = []
 
             async with self._acquire_lock:
                 for vm in list(self._vms.values()):
@@ -324,47 +331,45 @@ class PoolManager:
                         continue
                     if vm.assigned_at is None:
                         continue
-                    age = now - vm.assigned_at
-                    if age <= self._config.vm_idle_timeout:
+                    if now - vm.assigned_at <= self._config.vm_idle_timeout:
                         continue
-
-                    logger.warning(
-                        "Auto-culling VM %s (assigned %.0fs ago, timeout=%ds)",
-                        vm.vm_id,
-                        age,
-                        self._config.vm_idle_timeout,
-                    )
-
                     try:
                         vm.transition_to(VMState.STOPPING)
                     except ValueError:
                         logger.debug("VM %s already stopping, skipping cull", vm.vm_id)
                         continue
-
-                    try:
-                        from .vsock import vsock_request
-
-                        await asyncio.wait_for(
-                            vsock_request(
-                                vm.vsock_path,
-                                {"action": "signal", "signum": 15},
-                                timeout=5,
-                            ),
-                            timeout=5,
-                        )
-                        await asyncio.sleep(5)
-                    except Exception as exc:
-                        logger.debug(
-                            "Vsock signal to %s failed (continuing): %s", vm.vm_id, exc
-                        )
-
-                    await self._destroy_vm(vm)
                     del self._vms[vm.vm_id]
-                    AUTO_CULL_TOTAL.inc()
-                    culled += 1
+                    to_cull.append(vm)
 
-            if culled:
-                logger.info("Auto-culled %d VM(s), replenishing pool", culled)
+            for vm in to_cull:
+                age = now - (vm.assigned_at or now)
+                logger.warning(
+                    "Auto-culling VM %s (assigned %.0fs ago, timeout=%ds)",
+                    vm.vm_id, age, self._config.vm_idle_timeout,
+                )
+                try:
+                    from .vsock import vsock_request
+                    await asyncio.wait_for(
+                        vsock_request(
+                            vm.vsock_path,
+                            {"action": "signal", "signum": 15},
+                            timeout=5,
+                        ),
+                        timeout=5,
+                    )
+                    await asyncio.sleep(5)
+                except Exception as exc:
+                    logger.debug(
+                        "Vsock signal to %s failed (continuing): %s", vm.vm_id, exc
+                    )
+                try:
+                    await self._destroy_vm(vm)
+                except Exception as exc:
+                    logger.warning("Failed to destroy culled VM %s: %s", vm.vm_id, exc)
+                AUTO_CULL_TOTAL.inc()
+
+            if to_cull:
+                logger.info("Auto-culled %d VM(s), replenishing pool", len(to_cull))
                 self._update_vm_gauges()
                 await self.replenish()
 

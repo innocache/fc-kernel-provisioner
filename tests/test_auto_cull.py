@@ -198,3 +198,36 @@ async def test_cull_concurrent_release_safety(tmp_path):
     manager._destroy_vm.assert_not_awaited()
     manager.replenish.assert_not_awaited()
     assert vm.vm_id in manager._vms
+
+
+async def test_cull_destroy_failure_continues(tmp_path):
+    manager = PoolManager(make_test_config(tmp_path, vm_idle_timeout=1))
+    manager._destroy_vm = AsyncMock(side_effect=OSError("cleanup failed"))
+    manager.replenish = AsyncMock(return_value=None)
+
+    vm = make_vm("vm-destroy-fail", VMState.ASSIGNED)
+    vm.assigned_at = time.monotonic() - 999
+    manager._vms[vm.vm_id] = vm
+
+    before = metric_value("fc_pool_auto_cull_total")
+    with patch("fc_pool_manager.vsock.vsock_request", new_callable=AsyncMock) as mock_vsock:
+        mock_vsock.return_value = {"status": "ok"}
+        await run_one_auto_cull_iteration(manager)
+
+    manager._destroy_vm.assert_awaited_once()
+    assert vm.vm_id not in manager._vms
+    assert metric_value("fc_pool_auto_cull_total") == pytest.approx(before + 1)
+
+
+async def test_release_destroy_concurrent_with_cull(tmp_path):
+    manager = PoolManager(make_test_config(tmp_path, vm_idle_timeout=1))
+    manager._destroy_vm = AsyncMock(return_value=None)
+
+    vm = make_vm("vm-race-release", VMState.ASSIGNED)
+    vm.assigned_at = time.monotonic() - 999
+    manager._vms[vm.vm_id] = vm
+
+    await manager.release(vm.vm_id, destroy=True)
+
+    assert vm.vm_id not in manager._vms
+    assert await manager.release(vm.vm_id, destroy=True) is None

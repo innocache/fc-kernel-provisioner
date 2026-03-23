@@ -215,6 +215,14 @@ async def test_acquire_total_success(tmp_path):
     assert metric_value("fc_pool_acquire_total", {"result": "success"}) == pytest.approx(before + 1)
 
 
+async def test_acquire_total_invalid_request(tmp_path):
+    manager = PoolManager(make_test_config(tmp_path))
+    before = metric_value("fc_pool_acquire_total", {"result": "invalid_request"})
+    with pytest.raises(ValueError, match="do not match pool profile"):
+        await manager.acquire(vcpu=99, mem_mib=99)
+    assert metric_value("fc_pool_acquire_total", {"result": "invalid_request"}) == pytest.approx(before + 1)
+
+
 async def test_acquire_total_exhausted(tmp_path):
     manager = PoolManager(make_test_config(tmp_path, max_vms=1))
     vm = make_vm("vm-full", VMState.ASSIGNED)
