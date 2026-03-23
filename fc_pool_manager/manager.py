@@ -5,14 +5,27 @@ import logging
 import os
 import secrets
 import shutil
+import time
 from typing import Any, Optional
 
 from .config import PoolConfig
 from .firecracker_api import FirecrackerAPI
+from .metrics import (
+    ACQUIRE_DURATION,
+    ACQUIRE_TOTAL,
+    AUTO_CULL_TOTAL,
+    BOOT_DURATION,
+    HEALTH_CHECK_FAILURES_TOTAL,
+    POOL_MAX_VMS,
+    POOL_VMS_TOTAL,
+    RELEASE_TOTAL,
+)
 from .network import NetworkManager
 from .vm import CIDAllocator, VMInstance, VMState
 
 logger = logging.getLogger(__name__)
+
+_CULL_INTERVAL = 60
 
 
 class PoolManager:
@@ -29,6 +42,14 @@ class PoolManager:
         self._cid_alloc = CIDAllocator()
         self._boot_lock = asyncio.Lock()
         self._acquire_lock = asyncio.Lock()
+        POOL_MAX_VMS.set(config.max_vms)
+
+    def _update_vm_gauges(self) -> None:
+        counts = {s.value: 0 for s in VMState}
+        for vm in self._vms.values():
+            counts[vm.state.value] += 1
+        for state, count in counts.items():
+            POOL_VMS_TOTAL.labels(state=state).set(count)
 
     @property
     def idle_count(self) -> int:
@@ -49,13 +70,33 @@ class PoolManager:
 
     async def acquire(self, vcpu: int, mem_mib: int) -> dict[str, Any]:
         """Claim an idle VM from the pool."""
-        if vcpu != self._config.vm_vcpu or mem_mib != self._config.vm_mem_mib:
-            raise ValueError(
-                f"Requested resources (vcpu={vcpu}, mem_mib={mem_mib}) "
-                f"do not match pool profile "
-                f"(vcpu={self._config.vm_vcpu}, mem_mib={self._config.vm_mem_mib})"
-            )
+        t0 = asyncio.get_event_loop().time()
+        try:
+            if vcpu != self._config.vm_vcpu or mem_mib != self._config.vm_mem_mib:
+                raise ValueError(
+                    f"Requested resources (vcpu={vcpu}, mem_mib={mem_mib}) "
+                    f"do not match pool profile "
+                    f"(vcpu={self._config.vm_vcpu}, mem_mib={self._config.vm_mem_mib})"
+                )
+            result = await self._acquire_inner(vcpu, mem_mib)
+            ACQUIRE_DURATION.observe(asyncio.get_event_loop().time() - t0)
+            ACQUIRE_TOTAL.labels(result="success").inc()
+            self._update_vm_gauges()
+            return result
+        except ValueError:
+            ACQUIRE_TOTAL.labels(result="invalid_request").inc()
+            raise
+        except RuntimeError as e:
+            if "pool_exhausted" in str(e):
+                ACQUIRE_TOTAL.labels(result="exhausted").inc()
+            else:
+                ACQUIRE_TOTAL.labels(result="error").inc()
+            raise
+        except Exception:
+            ACQUIRE_TOTAL.labels(result="error").inc()
+            raise
 
+    async def _acquire_inner(self, vcpu: int, mem_mib: int) -> dict[str, Any]:
         async with self._acquire_lock:
             for vm in self._vms.values():
                 if vm.state == VMState.IDLE:
@@ -83,19 +124,21 @@ class PoolManager:
 
     async def release(self, vm_id: str, destroy: bool = True) -> None:
         """Release a VM back to the pool or destroy it."""
-        vm = self._vms.get(vm_id)
-        if vm is None:
-            logger.warning("Release called for unknown VM %s", vm_id)
-            return
-
         if destroy:
-            if vm.state != VMState.STOPPING:
-                vm.transition_to(VMState.STOPPING)
+            async with self._acquire_lock:
+                vm = self._vms.pop(vm_id, None)
+                if vm is None:
+                    logger.warning("Release called for unknown VM %s", vm_id)
+                    return
+                if vm.state != VMState.STOPPING:
+                    vm.transition_to(VMState.STOPPING)
             await self._destroy_vm(vm)
-            del self._vms[vm_id]
             logger.info("Destroyed VM %s", vm_id)
         else:
-            # Best-effort reset/stop of the guest before returning to the idle pool.
+            vm = self._vms.get(vm_id)
+            if vm is None:
+                logger.warning("Release called for unknown VM %s", vm_id)
+                return
             try:
                 from .vsock import vsock_request
                 await vsock_request(vm.vsock_path, {"action": "reset"}, timeout=10)
@@ -107,6 +150,9 @@ class PoolManager:
                 )
             vm.transition_to(VMState.IDLE)
             logger.info("Released VM %s back to idle pool", vm_id)
+
+        RELEASE_TOTAL.inc()
+        self._update_vm_gauges()
 
     async def is_alive(self, vm_id: str) -> dict[str, Any]:
         """Check if a VM is alive by pinging the guest agent."""
@@ -205,7 +251,10 @@ class PoolManager:
                     await asyncio.sleep(0.5)
 
             vm.transition_to(VMState.IDLE)
+            boot_secs = asyncio.get_event_loop().time() - vm.created_at
+            BOOT_DURATION.observe(boot_secs)
             logger.info("VM %s booted (ip=%s, cid=%d)", vm_id, ip, cid)
+            self._update_vm_gauges()
             return vm
 
         except Exception:
@@ -246,6 +295,7 @@ class PoolManager:
                 # If total_count didn't increase, boot made no progress — stop.
                 if self.total_count <= count_before:
                     break
+        self._update_vm_gauges()
 
     async def health_check_loop(self) -> None:
         """Periodically ping idle VMs and replace unhealthy ones."""
@@ -258,10 +308,70 @@ class PoolManager:
                     health = await self.is_alive(vm.vm_id)
                     if not health["alive"]:
                         logger.warning("VM %s unhealthy, replacing", vm.vm_id)
+                        HEALTH_CHECK_FAILURES_TOTAL.inc()
                         vm.transition_to(VMState.STOPPING)
                         await self._destroy_vm(vm)
                         del self._vms[vm.vm_id]
+            self._update_vm_gauges()
             await self.replenish()
+
+    async def auto_cull_loop(self) -> None:
+        if self._config.vm_idle_timeout == 0:
+            logger.info("Auto-cull disabled (vm_idle_timeout=0)")
+            return
+
+        while True:
+            await asyncio.sleep(_CULL_INTERVAL)
+            now = time.monotonic()
+            to_cull: list[VMInstance] = []
+
+            async with self._acquire_lock:
+                for vm in list(self._vms.values()):
+                    if vm.state != VMState.ASSIGNED:
+                        continue
+                    if vm.assigned_at is None:
+                        continue
+                    if now - vm.assigned_at <= self._config.vm_idle_timeout:
+                        continue
+                    try:
+                        vm.transition_to(VMState.STOPPING)
+                    except ValueError:
+                        logger.debug("VM %s already stopping, skipping cull", vm.vm_id)
+                        continue
+                    del self._vms[vm.vm_id]
+                    to_cull.append(vm)
+
+            for vm in to_cull:
+                age = now - (vm.assigned_at or now)
+                logger.warning(
+                    "Auto-culling VM %s (assigned %.0fs ago, timeout=%ds)",
+                    vm.vm_id, age, self._config.vm_idle_timeout,
+                )
+                try:
+                    from .vsock import vsock_request
+                    await asyncio.wait_for(
+                        vsock_request(
+                            vm.vsock_path,
+                            {"action": "signal", "signum": 15},
+                            timeout=5,
+                        ),
+                        timeout=5,
+                    )
+                    await asyncio.sleep(5)
+                except Exception as exc:
+                    logger.debug(
+                        "Vsock signal to %s failed (continuing): %s", vm.vm_id, exc
+                    )
+                try:
+                    await self._destroy_vm(vm)
+                except Exception as exc:
+                    logger.warning("Failed to destroy culled VM %s: %s", vm.vm_id, exc)
+                AUTO_CULL_TOTAL.inc()
+
+            if to_cull:
+                logger.info("Auto-culled %d VM(s), replenishing pool", len(to_cull))
+                self._update_vm_gauges()
+                await self.replenish()
 
     async def shutdown(self) -> None:
         """Gracefully stop all VMs."""
