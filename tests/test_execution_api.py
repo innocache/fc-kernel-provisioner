@@ -628,3 +628,47 @@ class TestEndpoints:
         assert data["outputs"][1]["mime_type"] == "text/html"
         assert data["outputs"][1]["data"] == "<table>x</table>"
         assert data["outputs"][1]["data_b64"] is None
+
+    async def test_validation_error_returns_error_envelope(self, client):
+        c, mock = client
+        resp = await c.post(
+            "/sessions/abc/execute", content=b"not json",
+            headers={"content-type": "application/json"},
+        )
+        assert resp.status_code == 422
+        assert "error" in resp.json()
+
+    async def test_one_shot_start_failure_calls_stop(self, client):
+        c, mock = client
+        mock.start = AsyncMock(
+            side_effect=RuntimeError("No VMs available"),
+        )
+        await c.post("/execute", json={"code": "x"})
+        mock.stop.assert_awaited()
+
+    @patch("execution_api.server.SandboxSession")
+    async def test_create_start_failure_calls_stop(self, MockSession):
+        mock = AsyncMock()
+        mock.start = AsyncMock(side_effect=RuntimeError("No VMs"))
+        MockSession.return_value = mock
+        mgr = SessionManager(
+            gateway_url="http://test:8888", default_timeout=30,
+            max_sessions=20, session_ttl=600,
+        )
+        with pytest.raises(RuntimeError):
+            await mgr.create()
+        assert len(mgr.sessions) == 0
+        mock.stop.assert_awaited_once()
+
+    @patch("execution_api.server.SandboxSession")
+    async def test_create_enforces_max_sessions_atomically(self, MockSession):
+        MockSession.return_value = AsyncMock()
+        mgr = SessionManager(
+            gateway_url="http://test:8888", default_timeout=30,
+            max_sessions=2, session_ttl=600,
+        )
+        await mgr.create()
+        await mgr.create()
+        with pytest.raises(RuntimeError, match="max sessions reached"):
+            await mgr.create()
+        assert len(mgr.sessions) == 2

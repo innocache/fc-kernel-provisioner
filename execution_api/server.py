@@ -7,11 +7,12 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -52,6 +53,7 @@ class SessionEntry:
     session_id: str
     created_at: float
     last_active: float
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 def _make_artifact_store() -> LocalArtifactStore | None:
@@ -76,6 +78,7 @@ class SessionManager:
         self._session_ttl = session_ttl
         self._sessions: dict[str, SessionEntry] = {}
         self._cleanup_task: asyncio.Task | None = None
+        self._lock = asyncio.Lock()
 
     @property
     def gateway_url(self) -> str:
@@ -94,24 +97,35 @@ class SessionManager:
         return self._sessions
 
     async def create(self, execution_timeout: int | None = None) -> SessionEntry:
-        timeout = execution_timeout or self._default_timeout
-        session = SandboxSession(
-            gateway_url=self._gateway_url,
-            default_timeout=timeout,
-            artifact_store=_make_artifact_store(),
-        )
-        await session.start()
+        async with self._lock:
+            if len(self._sessions) >= self._max_sessions:
+                raise RuntimeError("max sessions reached")
 
-        session_id = uuid.uuid4().hex
-        now = time.time()
-        entry = SessionEntry(
-            session=session,
-            session_id=session_id,
-            created_at=now,
-            last_active=now,
-        )
-        self._sessions[session_id] = entry
-        return entry
+            timeout = execution_timeout or self._default_timeout
+            session = SandboxSession(
+                gateway_url=self._gateway_url,
+                default_timeout=timeout,
+                artifact_store=_make_artifact_store(),
+            )
+            try:
+                await session.start()
+            except Exception:
+                try:
+                    await session.stop()
+                except Exception:
+                    pass
+                raise
+
+            session_id = uuid.uuid4().hex
+            now = time.time()
+            entry = SessionEntry(
+                session=session,
+                session_id=session_id,
+                created_at=now,
+                last_active=now,
+            )
+            self._sessions[session_id] = entry
+            return entry
 
     def get(self, session_id: str) -> SessionEntry | None:
         return self._sessions.get(session_id)
@@ -224,18 +238,24 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
             content={"error": exc.detail},
         )
 
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request, exc):
+        return JSONResponse(
+            status_code=422,
+            content={"error": str(exc)},
+        )
+
     # ── Session CRUD ─────────────────────────────────────────────────
 
     @app.post("/sessions", response_model=CreateSessionResponse)
     async def create_session(
         req: CreateSessionRequest = CreateSessionRequest(),
     ):
-        if session_manager.is_full:
-            raise HTTPException(status_code=503, detail="max sessions reached")
         try:
             entry = await session_manager.create(req.execution_timeout)
-        except RuntimeError:
-            raise HTTPException(status_code=503, detail="no VMs available")
+        except RuntimeError as e:
+            detail = "max sessions reached" if "max sessions" in str(e) else "no VMs available"
+            raise HTTPException(status_code=503, detail=detail)
         return CreateSessionResponse(
             session_id=entry.session_id,
             created_at=datetime.fromtimestamp(entry.created_at, tz=timezone.utc),
@@ -268,8 +288,9 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
         entry = session_manager.get(session_id)
         if entry is None:
             raise HTTPException(status_code=404, detail="session not found")
-        entry.last_active = time.time()
-        result = await entry.session.execute(req.code)
+        async with entry.lock:
+            entry.last_active = time.time()
+            result = await entry.session.execute(req.code)
         return _result_to_response(result)
 
     @app.post("/execute", response_model=ExecuteResponse)
@@ -282,11 +303,10 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
         )
         try:
             await session.start()
-        except RuntimeError:
-            raise HTTPException(status_code=503, detail="no VMs available")
-        try:
             result = await session.execute(req.code)
             return _result_to_response(result)
+        except RuntimeError:
+            raise HTTPException(status_code=503, detail="no VMs available")
         finally:
             try:
                 await session.stop()
