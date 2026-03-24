@@ -122,6 +122,17 @@ class TestRemoveVmRules:
         assert tc_calls == []
 
 
+class TestDeleteTap:
+    async def test_delete_tap_runs_ip_link_del(self, net):
+        net._run = AsyncMock()
+        await net.delete_tap("tap-abc")
+        net._run.assert_awaited_once_with("ip", "link", "del", "tap-abc")
+
+    async def test_delete_tap_failure_logged_not_raised(self, net):
+        net._run = AsyncMock(side_effect=subprocess.CalledProcessError(1, "ip"))
+        await net.delete_tap("tap-abc")
+
+
 class TestConfigParsing:
     def test_rate_limit_default(self, tmp_path):
         from fc_pool_manager.config import PoolConfig

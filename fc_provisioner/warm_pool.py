@@ -3,7 +3,7 @@ import logging
 from typing import Any, ClassVar, Optional
 
 from .pool_client import PoolClient
-from .provisioner import FirecrackerProcess, FirecrackerProvisioner
+from .provisioner import FirecrackerProvisioner
 
 logger = logging.getLogger(__name__)
 

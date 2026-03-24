@@ -6,7 +6,7 @@ import os
 import secrets
 import shutil
 import time
-from typing import Any, Optional
+from typing import Any
 
 from .config import PoolConfig
 from .firecracker_api import FirecrackerAPI
