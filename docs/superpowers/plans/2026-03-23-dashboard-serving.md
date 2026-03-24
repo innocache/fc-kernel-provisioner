@@ -10,15 +10,15 @@
 
 **Spec:** `docs/superpowers/specs/2026-03-23-dashboard-serving-design.md`
 
-**Status:** Planned (not started)
+**Status:** All tasks complete. 411 unit + 27 integration tests passing.
 
 | Chunk | Status |
 |-------|--------|
-| 1: Pydantic Models + Caddy Client (Tasks 1-2) | TODO |
-| 2: Guest Agent Extension (Task 3) | TODO |
-| 3: VM Info Lookup (Task 4) | TODO |
-| 4: Execution API Dashboard Endpoints (Tasks 5-6) | TODO |
-| 5: Schemas + Config + Integration Tests (Tasks 7-8) | TODO |
+| 1: Pydantic Models + Caddy Client (Tasks 1-2) | DONE |
+| 2: Guest Agent Extension (Task 3) | DONE |
+| 3: VM Info Lookup (Task 4) | DONE |
+| 4: Execution API Dashboard Endpoints (Tasks 5-6) | DONE |
+| 5: Schemas + Config + Integration Tests (Tasks 7-8) | DONE |
 
 ---
 

@@ -33,7 +33,7 @@ fc-kernel-provisioner/
 │   └── server.py            # aiohttp Unix socket API
 │
 ├── guest/                   # Guest VM contents
-│   ├── fc_guest_agent.py    # Vsock agent (port 52, manages ipykernel)
+│   ├── fc_guest_agent.py    # Vsock agent (port 52, manages ipykernel + Panel dashboards)
 │   ├── init.sh              # PID 1 init script
 │   └── build_rootfs.sh      # Builds Alpine rootfs with Python + data science libs
 │
@@ -59,13 +59,18 @@ fc-kernel-provisioner/
 ├── execution_api/          # REST API server for chatbot integration
 │   ├── server.py           # FastAPI app, SessionManager, endpoints
 │   ├── models.py           # Pydantic request/response models
+│   ├── caddy_client.py     # Dynamic Caddy route management for dashboards
 │   └── tool_schemas/       # Claude and OpenAI tool definitions
 │
 ├── examples/               # Runnable chatbot integration examples
 │   ├── oneshot_example.py  # Single-turn Claude + SandboxSession
 │   └── conversation_example.py  # Multi-turn with persistent session
 │
-└── tests/                   # 340 unit + 22 integration tests
+├── config/
+│   ├── Caddyfile                # Caddy reverse proxy config (dashboard routing)
+│   └── ...
+│
+└── tests/                   # 411 unit + 27 integration tests
 ```
 
 ## Requirements
@@ -163,6 +168,8 @@ uv run python -m execution_api.server
 | `POST /sessions` | POST | Create a sandbox session |
 | `GET /sessions` | GET | List active sessions |
 | `POST /sessions/{id}/execute` | POST | Execute code in session |
+| `POST /sessions/{id}/dashboard` | POST | Launch Panel dashboard in session |
+| `DELETE /sessions/{id}/dashboard` | DELETE | Stop dashboard |
 | `DELETE /sessions/{id}` | DELETE | Destroy session |
 | `POST /execute` | POST | One-shot: create + execute + destroy |
 
@@ -181,7 +188,7 @@ resp = httpx.post(f"http://localhost:8000/sessions/{sid}/execute", json={"code":
 print(resp.json()["stdout"])  # "42\n"
 ```
 
-Tool schemas for Claude and OpenAI are in `execution_api/tool_schemas/`. See `examples/` for complete chatbot integration scripts.
+Tool schemas for Claude and OpenAI (`execute_python_code` + `launch_dashboard`) are in `execution_api/tool_schemas/`. See `examples/` for complete chatbot integration scripts. Dashboards run inside the Firecracker VM (Panel-in-VM) and are served to browsers through Caddy reverse proxy at `/dash/{session_id}/`.
 
 ## Pool Manager API
 
@@ -192,7 +199,10 @@ The pool manager exposes a Unix socket HTTP API at `/var/run/fc-pool.sock`:
 | `/api/vms/acquire` | POST | Acquire an idle VM (`{vcpu, mem_mib}` → `{id, ip, vsock_path}`) |
 | `/api/vms/{id}` | DELETE | Release a VM (`{destroy: bool}`) |
 | `/api/vms/{id}/health` | GET | Health check via vsock ping |
+| `/api/vms/{id}/bind-kernel` | POST | Bind kernel_id to VM for dashboard routing |
+| `/api/vms/by-kernel/{kernel_id}` | GET | Lookup VM by kernel_id |
 | `/api/pool/status` | GET | Pool stats (`{idle, assigned, booting, max}`) |
+| `/api/metrics` | GET | Prometheus metrics |
 
 ## Configuration
 
@@ -203,6 +213,7 @@ pool:
   size: 5              # pre-warmed idle VMs
   max_vms: 30          # hard ceiling
   health_check_interval: 30
+  vm_idle_timeout: 600     # auto-cull idle assigned VMs
 
 vm_defaults:
   vcpu: 1
@@ -228,7 +239,7 @@ jailer:
 See [docs/testing.md](docs/testing.md) for the full testing plan.
 
 ```bash
-# Unit tests (340 tests, no KVM required)
+# Unit tests (411 tests, no KVM required)
 uv run pytest tests/ -v -m "not integration"
 
 # Smoke test (requires running services)
@@ -244,7 +255,7 @@ uv run pytest tests/ -v -m "not integration"
 # Run full test suite on a remote KVM host
 ./scripts/remote-test.sh user@host
 
-# Starts pool manager, Kernel Gateway, and Execution API automatically
+# Starts pool manager, Kernel Gateway, Execution API, and Caddy automatically
 
 # Deploy as systemd services
 ./scripts/deploy.sh user@host deploy
@@ -264,7 +275,7 @@ sudo ./guest/build_rootfs.sh --clean      # Remove built rootfs image
 
 ## Status
 
-The **core slice**, **sandbox client**, and **Execution API** are complete: Python code execution inside jailed Firecracker microVMs with structured result capture (stdout, stderr, errors, images, HTML) via the `sandbox_client` library, and a REST API (`execution_api`) for chatbot integration with server-managed sessions, TTL cleanup, and Claude/OpenAI tool schemas.
+All **8 spec components are complete**: sandboxed Python execution in Firecracker microVMs, structured result capture (stdout, stderr, errors, images, HTML) via `sandbox_client`, REST API (`execution_api`) with server-managed sessions, Prometheus metrics, VM auto-cull, interactive Panel dashboards served via Caddy, and Claude/OpenAI tool schemas. See [GitHub Issues](https://github.com/innocache/fc-kernel-provisioner/issues) for remaining work (network hardening, snapshot optimization).
 
 ## License
 

@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-03-23-chatbot-integration-design.md`
 
-**Status:** All tasks complete. 59 Execution API unit tests + 5 Execution API integration tests passing. Full suite verification on remote host: 340 unit tests + 22 integration tests passing.
+**Status:** All tasks complete. Full suite: 411 unit + 27 integration tests passing (current repo total).
 
 | Chunk | Status |
 |-------|--------|

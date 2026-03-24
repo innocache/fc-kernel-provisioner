@@ -45,7 +45,7 @@ Run anywhere — macOS, Linux, CI. Tests use mocks for all system interactions.
 uv run pytest tests/ -v -m "not integration"
 ```
 
-**340 unit tests (plus 22 integration tests).** Unit suite expected to pass in < 5 seconds.
+**411 unit tests (plus 27 integration tests).** Unit suite expected to pass in < 5 seconds.
 
 **What's covered:**
 
@@ -64,7 +64,12 @@ uv run pytest tests/ -v -m "not integration"
 | Output parser | `test_output_parser.py` | Jupyter message parsing → ExecutionResult. Stream/error/display_data/execute_reply handling. Mime bundle priority. Binary (PNG) vs text output. Malformed messages, edge cases |
 | Sandbox session | `test_session.py` | Lifecycle (start/stop/context manager), execute message format, timeout + interrupt, WebSocket error types, artifact store integration, HTTPS→WSS, msg_id filtering |
 | Artifact store | `test_artifact_store.py` | LocalArtifactStore file creation, URL generation, directory creation, overwrite, protocol compliance |
-| Execution API | `test_execution_api.py` | Pydantic models, SessionManager lifecycle + edge cases (TTL cleanup, max sessions, shutdown, startup failure cleanup), result conversion (binary base64, text inline, URLs), all endpoints via httpx AsyncClient (CRUD, execute, one-shot, error responses, 503/404), validation error envelope |
+| Execution API | `test_execution_api.py` | Pydantic models (incl. dashboard), SessionManager lifecycle + edge cases (TTL cleanup, max sessions, shutdown, startup failure cleanup), result conversion (binary base64, text inline, URLs), all endpoints via httpx AsyncClient (CRUD, execute, one-shot, dashboard launch/stop/cleanup, error responses, 503/404), validation error envelope |
+| Caddy client | `test_caddy_client.py` | Route add (PUT success, POST fallback on 404, server key discovery), route remove (success, 404 idempotent, server error), route ID format, route structure validation |
+| Pool server (bind/lookup) | `test_pool_server.py` | Kernel-to-VM bind, lookup success/404, missing kernel_id 400, unknown VM 404, bind replaces previous |
+| VM timestamps | `test_vm_timestamps.py` | created_at on construction, assigned_at set/cleared on transitions, immutability across lifecycle |
+| Auto-cull | `test_auto_cull.py` | Stale VM culled, active VM preserved, disabled when timeout=0, destroy failure continues, release/cull race safety, cull metric incremented |
+| Metrics | `test_metrics.py` | VM gauges (boot/acquire/release), acquire counters (success/exhausted/invalid_request), acquire duration histogram, boot duration, health check failure counter, max_vms gauge |
 
 ### Level 2: Smoke Test (manual, requires running services)
 
@@ -92,7 +97,7 @@ End-to-end test: code execution through the entire Firecracker path via the Kern
 uv run pytest tests/test_integration.py -v -m integration
 ```
 
-**22 tests.** Expected to pass in < 2 minutes.
+**27 tests.** Expected to pass in < 2 minutes.
 
 **What's covered:**
 
@@ -101,8 +106,10 @@ uv run pytest tests/test_integration.py -v -m integration
 | `TestFullPipeline` | hello_world, state persistence, error handling, imports (numpy), multiline output |
 | `TestSandboxClient` | hello_world, state persistence, error handling (with traceback), rich output (matplotlib PNG), HTML output (pandas DataFrame), timeout + interrupt, artifact store (file written + URL), explicit lifecycle (start/stop), error recovery (session reuse after error), execution_count increments, stderr capture, stdout before error |
 | `TestExecutionAPI` | hello_world via REST, session lifecycle (create → execute × 2 → delete, state persists), error result (ZeroDivisionError), rich output (matplotlib base64 PNG), session not found 404 |
+| `TestPoolMetrics` | Live /api/metrics endpoint returns Prometheus format with pool gauges |
+| `TestDashboardIntegration` | Dashboard launch + browser access, data from kernel, dashboard replace, cleanup on session delete |
 
-**Prerequisites:** Pool manager running, Kernel Gateway running, Execution API running, rootfs built, network configured.
+**Prerequisites:** Pool manager running, Kernel Gateway running, Execution API running, Caddy running, rootfs built, network configured.
 
 ---
 
