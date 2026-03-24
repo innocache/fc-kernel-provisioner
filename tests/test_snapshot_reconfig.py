@@ -62,7 +62,7 @@ async def test_restore_detaches_tap_before_resume(tmp_path):
     )
 
     with patch("fc_pool_manager.manager.FirecrackerAPI", return_value=api), \
-         patch("fc_pool_manager.vsock.vsock_request", new=AsyncMock(return_value={"ok": True})), \
+         patch("fc_pool_manager.vsock.vsock_request", new=AsyncMock(return_value={"status": "ok"})), \
          patch("os.chown"):
         await manager._restore_from_snapshot(vm)
 
@@ -79,7 +79,11 @@ async def test_restore_reattaches_tap_after_reconfig(tmp_path):
     manager._network.attach_to_bridge = AsyncMock(side_effect=lambda *_: events.append("attach"))
     manager._start_jailer = AsyncMock(return_value=str(tmp_path / "firecracker.sock"))
     api = SimpleNamespace(load_snapshot=AsyncMock(), resume=AsyncMock())
-    vsock = AsyncMock(side_effect=lambda *_args, **_kwargs: events.append("reconfig"))
+    async def _vsock_side_effect(*_args, **_kwargs):
+        events.append("reconfig")
+        return {"status": "ok", "key": "testkey", "ports": {}, "running": True}
+
+    vsock = AsyncMock(side_effect=_vsock_side_effect)
 
     with patch("fc_pool_manager.manager.FirecrackerAPI", return_value=api), \
          patch("fc_pool_manager.vsock.vsock_request", new=vsock), \
@@ -98,7 +102,7 @@ async def test_restore_sends_correct_reconfig_message(tmp_path):
     manager._network.attach_to_bridge = AsyncMock()
     manager._start_jailer = AsyncMock(return_value=str(tmp_path / "firecracker.sock"))
     api = SimpleNamespace(load_snapshot=AsyncMock(), resume=AsyncMock())
-    vsock = AsyncMock(return_value={"ok": True})
+    vsock = AsyncMock(return_value={"status": "ok"})
 
     with patch("fc_pool_manager.manager.FirecrackerAPI", return_value=api), \
          patch("fc_pool_manager.vsock.vsock_request", new=vsock), \
@@ -134,7 +138,7 @@ async def test_restore_renames_tap_for_golden_snapshot(tmp_path):
     api = SimpleNamespace(load_snapshot=AsyncMock(), resume=AsyncMock())
 
     with patch("fc_pool_manager.manager.FirecrackerAPI", return_value=api), \
-         patch("fc_pool_manager.vsock.vsock_request", new=AsyncMock(return_value={"ok": True})), \
+         patch("fc_pool_manager.vsock.vsock_request", new=AsyncMock(return_value={"status": "ok"})), \
          patch("os.chown"):
         await manager._restore_from_snapshot(vm)
 
@@ -156,14 +160,14 @@ async def test_restore_skips_rename_when_tap_matches(tmp_path):
     api = SimpleNamespace(load_snapshot=AsyncMock(), resume=AsyncMock())
 
     with patch("fc_pool_manager.manager.FirecrackerAPI", return_value=api), \
-         patch("fc_pool_manager.vsock.vsock_request", new=AsyncMock(return_value={"ok": True})), \
+         patch("fc_pool_manager.vsock.vsock_request", new=AsyncMock(return_value={"status": "ok"})), \
          patch("os.chown"):
         await manager._restore_from_snapshot(vm)
 
     manager._network._run.assert_not_awaited()
 
 
-async def test_restore_reconfig_failure_still_reattaches(tmp_path):
+async def test_restore_reconfig_failure_destroys_vm(tmp_path):
     manager = _build_manager(tmp_path)
     vm = _make_vm(tmp_path)
     _set_snapshot(manager, tmp_path, golden_tap_name=vm.tap_name)
@@ -176,9 +180,10 @@ async def test_restore_reconfig_failure_still_reattaches(tmp_path):
     with patch("fc_pool_manager.manager.FirecrackerAPI", return_value=api), \
          patch("fc_pool_manager.vsock.vsock_request", new=AsyncMock(side_effect=RuntimeError("boom"))), \
          patch("os.chown"):
-        await manager._restore_from_snapshot(vm)
+        with pytest.raises(RuntimeError, match="Network reconfig failed"):
+            await manager._restore_from_snapshot(vm)
 
-    manager._network.attach_to_bridge.assert_awaited_once_with(vm.tap_name)
+    manager._network.attach_to_bridge.assert_not_awaited()
 
 
 async def test_detach_from_bridge_runs_nomaster():
@@ -227,6 +232,7 @@ async def test_full_restore_sequence_ordering(tmp_path):
 
     async def vsock_side_effect(*_, **__):
         events.append("vsock_reconfig")
+        return {"status": "ok", "key": "testkey", "ports": {}, "running": True}
 
     async def attach_side_effect(*_):
         events.append("attach")

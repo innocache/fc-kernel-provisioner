@@ -273,6 +273,11 @@ def _result_to_response(result: ExecutionResult) -> ExecuteResponse:
 # ── FastAPI App ──────────────────────────────────────────────────────────
 
 
+_MAX_CONCURRENT_CLEANUPS = 10
+_cleanup_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_CLEANUPS)
+_cleanup_tasks: set[asyncio.Task] = set()
+
+
 def create_app(session_manager: SessionManager | None = None) -> FastAPI:
     if session_manager is None:
         session_manager = SessionManager()
@@ -281,6 +286,9 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         session_manager.start_cleanup_task()
         yield
+        if _cleanup_tasks:
+            logger.info("Draining %d background cleanup tasks...", len(_cleanup_tasks))
+            await asyncio.gather(*_cleanup_tasks, return_exceptions=True)
         await session_manager.shutdown()
 
     app = FastAPI(title="Execution API", lifespan=lifespan)
@@ -356,20 +364,33 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
             default_timeout=timeout,
             artifact_store=_make_artifact_store(),
         )
+        started = False
         try:
             await session.start()
+            started = True
             result = await session.execute(req.code)
         except RuntimeError:
-            asyncio.create_task(_safe_stop(session))
+            if started:
+                _schedule_cleanup(session)
             raise HTTPException(status_code=503, detail="no VMs available")
-        asyncio.create_task(_safe_stop(session))
+        except Exception:
+            if started:
+                _schedule_cleanup(session)
+            raise
+        _schedule_cleanup(session)
         return _result_to_response(result)
 
+    def _schedule_cleanup(session: SandboxSession) -> None:
+        task = asyncio.create_task(_safe_stop(session))
+        _cleanup_tasks.add(task)
+        task.add_done_callback(_cleanup_tasks.discard)
+
     async def _safe_stop(session: SandboxSession) -> None:
-        try:
-            await session.stop()
-        except Exception:
-            pass
+        async with _cleanup_semaphore:
+            try:
+                await session.stop()
+            except Exception:
+                logger.debug("Background session cleanup failed", exc_info=True)
 
     @app.post("/sessions/{session_id}/dashboard", response_model=DashboardResponse)
     async def launch_dashboard(session_id: str, req: DashboardRequest):

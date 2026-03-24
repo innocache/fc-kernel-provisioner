@@ -153,7 +153,7 @@ class TestHandleMessage:
 
         assert response["status"] == "ready"
         assert response["pid"] == 12345
-        mock_wait.assert_called_once_with("172.16.0.2", msg["ports"])
+        mock_wait.assert_called_once_with("172.16.0.2", msg["ports"], proc=mock_proc)
         assert mock_popen.call_args.kwargs["env"]["PYTHONHASHSEED"] == "0"
 
     def test_ping_response(self):

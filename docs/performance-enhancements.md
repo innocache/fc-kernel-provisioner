@@ -480,8 +480,18 @@ The first few requests after system startup may hit the cold path (~639ms) while
 ### 2. Burst Beyond Pool Size
 Requests exceeding `warm_pool_target` concurrent creates fall back to the cold path (~639ms each). The replenish loop races to refill the queue, but there is a window where burst traffic sees cold latency. Size `warm_pool_target` to match your burst profile.
 
-### 3. HMAC Key Sharing
-All VMs restored from the same golden snapshot share the same ipykernel HMAC key (generated once during golden VM boot). Security is maintained because VMs are network-isolated from each other — no VM can reach another VM's kernel port. The key is not a secret between VMs; it authenticates the provisioner to the kernel.
+### 3. HMAC Key Sharing (Security Trade-off)
+All VMs restored from the same golden snapshot share the same ipykernel HMAC key (generated once during golden VM boot). This is a deliberate trade-off: generating a fresh key per VM would require restarting the kernel after restore, adding ~500ms back to the startup path and negating much of the snapshot benefit.
+
+**Mitigations in place:**
+- VMs are network-isolated by ebtables (VM-to-VM traffic blocked at bridge level)
+- Only the Kernel Gateway on the host communicates with kernel ZMQ ports
+- The HMAC key authenticates ZMQ messages, not network access — it prevents message forgery, not eavesdropping
+- VMs are destroyed after each session — no long-lived key exposure
+
+**Residual risk:** If an attacker gains the shared key AND network access to another VM's ports (bypassing ebtables), they could forge Jupyter messages to that kernel. This requires two independent security failures.
+
+**To eliminate this risk entirely:** Don't snapshot the live kernel. Remove `pre_warm_kernel()` from the golden snapshot path and pre-warm after each restore instead. This adds ~780ms to session create (back to 639ms) but gives unique keys per VM.
 
 ### 4. Sequential TAP Rename
 Snapshot restore requires renaming the TAP interface from the golden VM's name to the new VM's name. This operation is serialized by a boot lock. Under high concurrency, VMs queue behind the lock. Firecracker v1.14+ introduces `network_overrides` in the snapshot load API, which would eliminate this serialization point.

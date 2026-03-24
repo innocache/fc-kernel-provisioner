@@ -354,6 +354,7 @@ class PoolManager:
             )
 
         from .vsock import vsock_request
+        reconfig_ok = False
         try:
             resp = await vsock_request(
                 vm.vsock_path,
@@ -365,14 +366,18 @@ class PoolManager:
                 },
                 timeout=10,
             )
-            if resp.get("status") != "ok":
-                logger.warning("reconfigure_network failed for %s: %s", vm.vm_id, resp)
-            else:
+            if resp.get("status") == "ok":
+                reconfig_ok = True
                 logger.info("Reconfigured network for %s: ip=%s mac=%s", vm.vm_id, vm.ip, vm.mac)
+            else:
+                logger.error("reconfigure_network failed for %s: %s", vm.vm_id, resp)
         except Exception as exc:
-            logger.warning("reconfigure_network vsock error for %s: %s", vm.vm_id, exc)
-        finally:
+            logger.error("reconfigure_network vsock error for %s: %s", vm.vm_id, exc)
+
+        if reconfig_ok:
             await self._network.attach_to_bridge(vm.tap_name)
+        else:
+            raise RuntimeError(f"Network reconfig failed for {vm.vm_id}, VM will be destroyed")
 
         try:
             resp = await vsock_request(

@@ -61,16 +61,43 @@ class WarmPoolProvisioner(FirecrackerProvisioner):
                     break
             await asyncio.sleep(1.0)
 
+    @classmethod
+    def _check_replenish_health(cls) -> None:
+        if cls._replenish_task is not None and cls._replenish_task.done():
+            exc = cls._replenish_task.exception() if not cls._replenish_task.cancelled() else None
+            if exc:
+                logger.error("Replenish loop died: %s — restarting", exc)
+            else:
+                logger.warning("Replenish loop exited — restarting")
+            cls._replenish_task = asyncio.ensure_future(cls._replenish_loop())
+
+    async def _get_valid_vm(self) -> dict | None:
+        deadline = asyncio.get_event_loop().time() + 30
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                vm = await asyncio.wait_for(self._warm_pool.get(), timeout=5)
+            except asyncio.TimeoutError:
+                return None
+            try:
+                health = await self._pool_client.is_alive(vm["id"])
+                if health.get("alive"):
+                    return vm
+                logger.warning("Warm pool: VM %s is stale, discarding", vm["id"])
+                await self._pool_client.release(vm["id"], destroy=True)
+            except Exception:
+                logger.warning("Warm pool: VM %s health check failed, discarding", vm["id"])
+        return None
+
     async def pre_launch(self, **kwargs) -> dict[str, Any]:
         self._apply_config()
         self._ensure_initialized(self.pool_socket, self.vcpu_count, self.mem_size_mib)
+        self._check_replenish_health()
 
-        try:
-            vm = await asyncio.wait_for(self._warm_pool.get(), timeout=30)
-            logger.info("Warm pool: serving %s to kernel (pool=%d)", vm["id"], self._warm_pool.qsize())
-        except asyncio.TimeoutError:
-            logger.warning("Warm pool empty, falling back to cold acquire")
+        vm = await self._get_valid_vm()
+        if vm is None:
+            logger.warning("Warm pool empty or all stale, falling back to cold acquire")
             return await super().pre_launch(**kwargs)
+        logger.info("Warm pool: serving %s to kernel (pool=%d)", vm["id"], self._warm_pool.qsize())
 
         self.pool_client = self._pool_client
         self.vm_id = vm["id"]

@@ -78,11 +78,13 @@ def write_connection_file(path: str, ports: dict, key: str, ip: str) -> None:
         json.dump(data, fh)
 
 
-def wait_for_kernel_ports(ip: str, ports: dict, timeout: float = 90.0) -> None:
+def wait_for_kernel_ports(ip: str, ports: dict, timeout: float = 90.0, proc=None) -> None:
     deadline = time.monotonic() + timeout
     pending = list(ports.values())
 
     while time.monotonic() < deadline:
+        if proc is not None and proc.poll() is not None:
+            raise RuntimeError(f"kernel process exited (code {proc.poll()}) while waiting for ports")
         remaining = []
         for port in pending:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -146,7 +148,7 @@ def start_kernel(ports: dict, key: str, ip: str) -> int:
             raise RuntimeError(with_log_context(f"ipykernel exited immediately with code {kernel_proc.poll()}"))
 
     try:
-        wait_for_kernel_ports(ip, ports)
+        wait_for_kernel_ports(ip, ports, proc=kernel_proc)
     except Exception as exc:
         raise RuntimeError(with_log_context(str(exc))) from exc
 
