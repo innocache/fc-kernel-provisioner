@@ -359,14 +359,17 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
         try:
             await session.start()
             result = await session.execute(req.code)
-            return _result_to_response(result)
         except RuntimeError:
+            asyncio.create_task(_safe_stop(session))
             raise HTTPException(status_code=503, detail="no VMs available")
-        finally:
-            try:
-                await session.stop()
-            except Exception:
-                pass
+        asyncio.create_task(_safe_stop(session))
+        return _result_to_response(result)
+
+    async def _safe_stop(session: SandboxSession) -> None:
+        try:
+            await session.stop()
+        except Exception:
+            pass
 
     @app.post("/sessions/{session_id}/dashboard", response_model=DashboardResponse)
     async def launch_dashboard(session_id: str, req: DashboardRequest):
