@@ -78,6 +78,12 @@ class FirecrackerProvisioner(KernelProvisionerBase):
         self.vm_ip = vm["ip"]
         self.vsock_path = vm["vsock_path"]
 
+        if self.vm_id and getattr(self, "kernel_id", None):
+            try:
+                await self.pool_client.bind_kernel(self.vm_id, self.kernel_id)
+            except Exception:
+                pass
+
         kwargs["cmd"] = []
         result = await super().pre_launch(**kwargs)
 

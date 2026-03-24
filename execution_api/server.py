@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+import aiohttp
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
@@ -18,9 +19,12 @@ from fastapi.staticfiles import StaticFiles
 
 from sandbox_client import ExecutionResult, LocalArtifactStore, SandboxSession
 
+from .caddy_client import CaddyClient, _vsock_request
 from .models import (
     CreateSessionRequest,
     CreateSessionResponse,
+    DashboardRequest,
+    DashboardResponse,
     DeleteResponse,
     ErrorDetail,
     ExecuteRequest,
@@ -42,6 +46,23 @@ ARTIFACT_BASE_DIR = os.environ.get("ARTIFACT_BASE_DIR")
 ARTIFACT_URL_PREFIX = os.environ.get("ARTIFACT_URL_PREFIX")
 SERVE_ARTIFACTS = os.environ.get("SERVE_ARTIFACTS", "true").lower() == "true"
 PORT = int(os.environ.get("PORT", "8000"))
+POOL_SOCKET = os.environ.get("POOL_SOCKET", "/var/run/fc-pool.sock")
+CADDY_ADMIN_URL = os.environ.get("CADDY_ADMIN_URL", "http://localhost:2019")
+DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", "5006"))
+
+caddy = CaddyClient(admin_url=CADDY_ADMIN_URL)
+
+
+async def _lookup_vm_by_kernel(pool_socket: str, kernel_id: str | None) -> dict[str, str]:
+    if not kernel_id:
+        raise RuntimeError("kernel_id unavailable")
+    conn = aiohttp.UnixConnector(path=pool_socket)
+    async with aiohttp.ClientSession(connector=conn) as http:
+        resp = await http.get(f"http://localhost/api/vms/by-kernel/{kernel_id}")
+        if resp.status != 200:
+            body = await resp.text()
+            raise RuntimeError(f"vm lookup failed ({resp.status}): {body}")
+        return await resp.json()
 
 
 # ── Session Manager ──────────────────────────────────────────────────────
@@ -54,6 +75,9 @@ class SessionEntry:
     created_at: float
     last_active: float
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    vm_ip: str | None = None
+    vsock_path: str | None = None
+    active_dashboard: str | None = None
 
 
 def _make_artifact_store() -> LocalArtifactStore | None:
@@ -116,6 +140,15 @@ class SessionManager:
                     pass
                 raise
 
+            vm_ip = None
+            vsock_path = None
+            try:
+                vm_info = await _lookup_vm_by_kernel(POOL_SOCKET, getattr(session, "_kernel_id", None))
+                vm_ip = vm_info.get("ip")
+                vsock_path = vm_info.get("vsock_path")
+            except Exception:
+                logger.debug("VM lookup failed after session start", exc_info=True)
+
             session_id = uuid.uuid4().hex
             now = time.time()
             entry = SessionEntry(
@@ -123,6 +156,9 @@ class SessionManager:
                 session_id=session_id,
                 created_at=now,
                 last_active=now,
+                vm_ip=vm_ip,
+                vsock_path=vsock_path,
+                active_dashboard=None,
             )
             self._sessions[session_id] = entry
             return entry
@@ -134,6 +170,20 @@ class SessionManager:
         entry = self._sessions.pop(session_id, None)
         if entry is None:
             return False
+
+        if entry.vsock_path and entry.active_dashboard:
+            try:
+                await _vsock_request(entry.vsock_path, {"action": "stop_dashboard"}, timeout=10)
+            except Exception:
+                logger.debug("Failed to stop dashboard during delete", exc_info=True)
+
+            try:
+                await caddy.remove_route(session_id)
+            except Exception:
+                logger.debug("Failed to remove dashboard route during delete", exc_info=True)
+
+            entry.active_dashboard = None
+
         try:
             await entry.session.stop()
         except Exception:
@@ -230,6 +280,7 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
         await session_manager.shutdown()
 
     app = FastAPI(title="Execution API", lifespan=lifespan)
+    app.state.session_manager = session_manager
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request, exc):
@@ -312,6 +363,75 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
                 await session.stop()
             except Exception:
                 pass
+
+    @app.post("/sessions/{session_id}/dashboard", response_model=DashboardResponse)
+    async def launch_dashboard(session_id: str, req: DashboardRequest):
+        entry = session_manager.get(session_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="session not found")
+        if entry.vsock_path is None or entry.vm_ip is None:
+            raise HTTPException(status_code=503, detail="VM info not available")
+
+        if entry.active_dashboard is not None:
+            try:
+                await _vsock_request(entry.vsock_path, {"action": "stop_dashboard"}, timeout=10)
+            except Exception:
+                logger.debug("Failed to stop existing dashboard before replacement", exc_info=True)
+
+        app_id = uuid.uuid4().hex[:12]
+        try:
+            resp = await _vsock_request(
+                entry.vsock_path,
+                {
+                    "action": "launch_dashboard",
+                    "code": req.code,
+                    "port": DASHBOARD_PORT,
+                    "app_id": app_id,
+                    "session_id": session_id,
+                },
+                timeout=30,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"vsock error: {exc}")
+
+        if resp.get("status") != "ok":
+            raise HTTPException(status_code=500, detail=resp.get("message", "launch failed"))
+
+        try:
+            await caddy.add_route(session_id, f"{entry.vm_ip}:{DASHBOARD_PORT}")
+        except Exception as exc:
+            try:
+                await _vsock_request(entry.vsock_path, {"action": "stop_dashboard"}, timeout=10)
+            except Exception:
+                pass
+            raise HTTPException(status_code=503, detail=f"caddy route error: {exc}")
+
+        entry.active_dashboard = app_id
+        return DashboardResponse(
+            url=f"/dash/{session_id}/dash_{app_id}",
+            session_id=session_id,
+            app_id=app_id,
+        )
+
+    @app.delete("/sessions/{session_id}/dashboard", response_model=DeleteResponse)
+    async def stop_dashboard(session_id: str):
+        entry = session_manager.get(session_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="session not found")
+
+        if entry.vsock_path and entry.active_dashboard:
+            try:
+                await _vsock_request(entry.vsock_path, {"action": "stop_dashboard"}, timeout=10)
+            except Exception:
+                logger.debug("Failed to stop dashboard", exc_info=True)
+
+        try:
+            await caddy.remove_route(session_id)
+        except Exception:
+            logger.debug("Failed to remove Caddy route", exc_info=True)
+
+        entry.active_dashboard = None
+        return DeleteResponse()
 
     # ── Artifact serving ─────────────────────────────────────────────
 

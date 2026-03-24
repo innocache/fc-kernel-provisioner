@@ -42,6 +42,7 @@ class PoolManager:
         self._cid_alloc = CIDAllocator()
         self._boot_lock = asyncio.Lock()
         self._acquire_lock = asyncio.Lock()
+        self._kernel_to_vm: dict[str, str] = {}
         POOL_MAX_VMS.set(config.max_vms)
 
     def _update_vm_gauges(self) -> None:
@@ -67,6 +68,23 @@ class PoolManager:
                 counts[key] += 1
         counts["max"] = self._config.max_vms
         return counts
+
+    def bind_kernel(self, vm_id: str, kernel_id: str) -> None:
+        self._kernel_to_vm[kernel_id] = vm_id
+
+    def vm_by_kernel(self, kernel_id: str) -> dict[str, Any] | None:
+        vm_id = self._kernel_to_vm.get(kernel_id)
+        if vm_id is None:
+            return None
+        vm = self._vms.get(vm_id)
+        if vm is None or vm.state != VMState.ASSIGNED:
+            return None
+        return {"vm_id": vm.vm_id, "ip": vm.ip, "vsock_path": vm.vsock_path}
+
+    def clear_kernel_bindings_for_vm(self, vm_id: str) -> None:
+        stale = [kid for kid, mapped in self._kernel_to_vm.items() if mapped == vm_id]
+        for kid in stale:
+            self._kernel_to_vm.pop(kid, None)
 
     async def acquire(self, vcpu: int, mem_mib: int) -> dict[str, Any]:
         """Claim an idle VM from the pool."""
@@ -132,6 +150,7 @@ class PoolManager:
                     return
                 if vm.state != VMState.STOPPING:
                     vm.transition_to(VMState.STOPPING)
+            self.clear_kernel_bindings_for_vm(vm_id)
             await self._destroy_vm(vm)
             logger.info("Destroyed VM %s", vm_id)
         else:
@@ -384,6 +403,7 @@ class PoolManager:
             except Exception as e:
                 logger.error("Error stopping VM %s: %s", vm.vm_id, e)
         self._vms.clear()
+        self._kernel_to_vm.clear()
 
     async def _run_subprocess(self, *cmd: str) -> None:
         """Run an external command as a subprocess."""

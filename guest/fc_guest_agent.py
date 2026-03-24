@@ -6,6 +6,7 @@ and manages ipykernel processes.
 """
 
 import json
+import glob
 import os
 import socket
 import struct
@@ -24,7 +25,9 @@ HEADER_FMT = "!I"
 MAX_MESSAGE_SIZE = 1 * 1024 * 1024  # 1 MiB
 
 kernel_proc = None
+panel_proc = None
 boot_time = time.monotonic()
+_APPS_DIR = "/apps"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -139,6 +142,79 @@ def start_kernel(ports: dict, key: str, ip: str) -> int:
     return kernel_proc.pid
 
 
+def _kill_proc(proc: subprocess.Popen, timeout: float = 5.0) -> None:
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
+def start_dashboard(code: str, port: int, app_id: str, session_id: str) -> None:
+    global panel_proc
+    if not code.strip():
+        raise RuntimeError("dashboard code is required")
+
+    os.makedirs(_APPS_DIR, exist_ok=True)
+    app_path = os.path.join(_APPS_DIR, f"dash_{app_id}.py")
+    with open(app_path, "w") as fh:
+        fh.write(code)
+
+    if panel_proc is not None and panel_proc.poll() is None:
+        _kill_proc(panel_proc)
+    panel_proc = None
+
+    python = sys.executable or "/usr/bin/python3"
+    panel_proc = subprocess.Popen(
+        [
+            python,
+            "-m",
+            "panel",
+            "serve",
+            app_path,
+            "--port",
+            str(port),
+            "--address",
+            "0.0.0.0",
+            "--allow-websocket-origin",
+            "*",
+            "--prefix",
+            f"/dash/{session_id}",
+        ],
+        start_new_session=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+
+    time.sleep(0.2)
+    if panel_proc.poll() is not None:
+        raise RuntimeError(f"panel exited immediately with code {panel_proc.poll()}")
+
+    try:
+        wait_for_kernel_ports("127.0.0.1", {"panel": port}, timeout=10.0)
+    except Exception as exc:
+        _kill_proc(panel_proc)
+        panel_proc = None
+        raise RuntimeError(f"panel serve did not start: {exc}") from exc
+
+
+def stop_dashboard() -> None:
+    global panel_proc
+    if panel_proc is not None:
+        _kill_proc(panel_proc)
+        panel_proc = None
+
+    if os.path.isdir(_APPS_DIR):
+        for app_path in glob.glob(os.path.join(_APPS_DIR, "dash_*.py")):
+            try:
+                os.remove(app_path)
+            except OSError:
+                pass
+
+
 # ---------------------------------------------------------------------------
 # Message protocol
 # ---------------------------------------------------------------------------
@@ -191,6 +267,24 @@ def handle_message(data: bytes) -> bytes:
         try:
             pid = start_kernel(ports, key, ip)
             return _encode_response({"status": "ready", "pid": pid})
+        except Exception as exc:
+            return _encode_response({"status": "error", "message": str(exc)})
+
+    elif action == "launch_dashboard":
+        code = msg.get("code", "")
+        port = msg.get("port", 5006)
+        app_id = msg.get("app_id", "")
+        session_id = msg.get("session_id", "")
+        try:
+            start_dashboard(code, port, app_id, session_id)
+            return _encode_response({"status": "ok", "app_id": app_id, "port": port})
+        except Exception as exc:
+            return _encode_response({"status": "error", "message": str(exc)})
+
+    elif action == "stop_dashboard":
+        try:
+            stop_dashboard()
+            return _encode_response({"status": "ok"})
         except Exception as exc:
             return _encode_response({"status": "error", "message": str(exc)})
 

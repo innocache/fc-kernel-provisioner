@@ -1,0 +1,19 @@
+{
+    admin localhost:2019
+    auto_https off
+}
+
+:8080 {
+    handle /api/kernels/* {
+        reverse_proxy localhost:8888
+    }
+
+    handle /artifacts/* {
+        root * /var/lib/sandbox-artifacts
+        file_server
+    }
+
+    handle /health {
+        respond "ok" 200
+    }
+}

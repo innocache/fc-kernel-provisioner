@@ -39,6 +39,15 @@ class PoolClient:
             )
             resp.raise_for_status()
 
+    async def bind_kernel(self, vm_id: str, kernel_id: str) -> None:
+        """Bind a kernel_id to a VM for dashboard lookup."""
+        async with aiohttp.ClientSession(connector=self._connector()) as session:
+            resp = await session.post(
+                f"{self._base_url}/api/vms/{vm_id}/bind-kernel",
+                json={"kernel_id": kernel_id},
+            )
+            resp.raise_for_status()
+
     async def is_alive(self, vm_id: str) -> dict[str, Any]:
         """Check if a VM is still running. Returns full health dict."""
         async with aiohttp.ClientSession(connector=self._connector()) as session:
