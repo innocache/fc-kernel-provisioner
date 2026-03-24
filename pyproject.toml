@@ -28,6 +28,7 @@ dev = [
 
 [project.entry-points."jupyter_client.kernel_provisioners"]
 firecracker-provisioner = "fc_provisioner:FirecrackerProvisioner"
+firecracker-warm-pool = "fc_provisioner.warm_pool:WarmPoolProvisioner"
 
 [tool.hatch.build.targets.wheel]
 packages = ["fc_provisioner", "fc_pool_manager", "sandbox_client", "execution_api"]

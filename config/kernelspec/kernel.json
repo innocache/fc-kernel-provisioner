@@ -4,7 +4,7 @@
     "argv": [],
     "metadata": {
         "kernel_provisioner": {
-            "provisioner_name": "firecracker-provisioner",
+            "provisioner_name": "firecracker-warm-pool",
             "config": {
                 "pool_socket": "/var/run/fc-pool.sock",
                 "vcpu_count": 1,
