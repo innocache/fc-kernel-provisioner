@@ -49,6 +49,11 @@ PORT = int(os.environ.get("PORT", "8000"))
 POOL_SOCKET = os.environ.get("POOL_SOCKET", "/var/run/fc-pool.sock")
 CADDY_ADMIN_URL = os.environ.get("CADDY_ADMIN_URL", "http://localhost:2019")
 DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", "5006"))
+DASHBOARD_ALLOWED_ORIGINS = [
+    o.strip() for o in
+    os.environ.get("DASHBOARD_ALLOWED_ORIGINS", "localhost:8080,127.0.0.1:8080").split(",")
+    if o.strip()
+]
 
 caddy = CaddyClient(admin_url=CADDY_ADMIN_URL)
 
@@ -221,12 +226,10 @@ class SessionManager:
             except asyncio.CancelledError:
                 pass
         for sid in list(self._sessions):
-            entry = self._sessions.pop(sid, None)
-            if entry:
-                try:
-                    await entry.session.stop()
-                except Exception:
-                    pass
+            try:
+                await self.delete(sid)
+            except Exception:
+                pass
 
 
 # ── Result Conversion ────────────────────────────────────────────────────
@@ -372,46 +375,48 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
         if entry.vsock_path is None or entry.vm_ip is None:
             raise HTTPException(status_code=503, detail="VM info not available")
 
-        if entry.active_dashboard is not None:
-            try:
-                await _vsock_request(entry.vsock_path, {"action": "stop_dashboard"}, timeout=10)
-            except Exception:
-                logger.debug("Failed to stop existing dashboard before replacement", exc_info=True)
+        async with entry.lock:
+            if entry.active_dashboard is not None:
+                try:
+                    await _vsock_request(entry.vsock_path, {"action": "stop_dashboard"}, timeout=10)
+                except Exception:
+                    logger.debug("Failed to stop existing dashboard before replacement", exc_info=True)
 
-        app_id = uuid.uuid4().hex[:12]
-        try:
-            resp = await _vsock_request(
-                entry.vsock_path,
-                {
-                    "action": "launch_dashboard",
-                    "code": req.code,
-                    "port": DASHBOARD_PORT,
-                    "app_id": app_id,
-                    "session_id": session_id,
-                },
-                timeout=30,
+            app_id = uuid.uuid4().hex[:12]
+            try:
+                resp = await _vsock_request(
+                    entry.vsock_path,
+                    {
+                        "action": "launch_dashboard",
+                        "code": req.code,
+                        "port": DASHBOARD_PORT,
+                        "app_id": app_id,
+                        "session_id": session_id,
+                        "allowed_origins": DASHBOARD_ALLOWED_ORIGINS,
+                    },
+                    timeout=30,
+                )
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail=f"vsock error: {exc}")
+
+            if resp.get("status") != "ok":
+                raise HTTPException(status_code=500, detail=resp.get("message", "launch failed"))
+
+            try:
+                await caddy.add_route(session_id, f"{entry.vm_ip}:{DASHBOARD_PORT}")
+            except Exception as exc:
+                try:
+                    await _vsock_request(entry.vsock_path, {"action": "stop_dashboard"}, timeout=10)
+                except Exception:
+                    pass
+                raise HTTPException(status_code=503, detail=f"caddy route error: {exc}")
+
+            entry.active_dashboard = app_id
+            return DashboardResponse(
+                url=f"/dash/{session_id}/dash_{app_id}",
+                session_id=session_id,
+                app_id=app_id,
             )
-        except Exception as exc:
-            raise HTTPException(status_code=503, detail=f"vsock error: {exc}")
-
-        if resp.get("status") != "ok":
-            raise HTTPException(status_code=500, detail=resp.get("message", "launch failed"))
-
-        try:
-            await caddy.add_route(session_id, f"{entry.vm_ip}:{DASHBOARD_PORT}")
-        except Exception as exc:
-            try:
-                await _vsock_request(entry.vsock_path, {"action": "stop_dashboard"}, timeout=10)
-            except Exception:
-                pass
-            raise HTTPException(status_code=503, detail=f"caddy route error: {exc}")
-
-        entry.active_dashboard = app_id
-        return DashboardResponse(
-            url=f"/dash/{session_id}/dash_{app_id}",
-            session_id=session_id,
-            app_id=app_id,
-        )
 
     @app.delete("/sessions/{session_id}/dashboard", response_model=DeleteResponse)
     async def stop_dashboard(session_id: str):
@@ -419,19 +424,20 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
         if entry is None:
             raise HTTPException(status_code=404, detail="session not found")
 
-        if entry.vsock_path and entry.active_dashboard:
+        async with entry.lock:
+            if entry.vsock_path and entry.active_dashboard:
+                try:
+                    await _vsock_request(entry.vsock_path, {"action": "stop_dashboard"}, timeout=10)
+                except Exception:
+                    logger.debug("Failed to stop dashboard", exc_info=True)
+
             try:
-                await _vsock_request(entry.vsock_path, {"action": "stop_dashboard"}, timeout=10)
+                await caddy.remove_route(session_id)
             except Exception:
-                logger.debug("Failed to stop dashboard", exc_info=True)
+                logger.debug("Failed to remove Caddy route", exc_info=True)
 
-        try:
-            await caddy.remove_route(session_id)
-        except Exception:
-            logger.debug("Failed to remove Caddy route", exc_info=True)
-
-        entry.active_dashboard = None
-        return DeleteResponse()
+            entry.active_dashboard = None
+            return DeleteResponse()
 
     # ── Artifact serving ─────────────────────────────────────────────
 

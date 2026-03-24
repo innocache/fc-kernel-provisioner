@@ -28,15 +28,22 @@ class TestCaddyClient:
 
     async def test_add_route_fallback_to_post_on_404(self, client):
         put_resp = _mock_response(404)
+        get_resp = MagicMock()
+        get_resp.status = 200
+        get_resp.json = AsyncMock(return_value={"srv0": {}})
         post_resp = _mock_response(201)
         session = AsyncMock()
         session.put = AsyncMock(return_value=put_resp)
+        session.get = AsyncMock(return_value=get_resp)
         session.post = AsyncMock(return_value=post_resp)
         session.__aenter__.return_value = session
         with patch("execution_api.caddy_client.aiohttp.ClientSession", return_value=session):
             await client.add_route("sess1", "172.16.0.2:5006")
         session.put.assert_awaited_once()
+        session.get.assert_awaited_once()
         session.post.assert_awaited_once()
+        post_url = session.post.call_args[0][0]
+        assert "srv0" in post_url
 
     async def test_add_route_server_error_raises(self, client):
         put_resp = _mock_response(500, "boom")

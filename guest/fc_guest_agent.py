@@ -153,7 +153,13 @@ def _kill_proc(proc: subprocess.Popen, timeout: float = 5.0) -> None:
         proc.wait()
 
 
-def start_dashboard(code: str, port: int, app_id: str, session_id: str) -> None:
+def start_dashboard(
+    code: str,
+    port: int,
+    app_id: str,
+    session_id: str,
+    allowed_origins: list[str] | None = None,
+) -> None:
     global panel_proc
     if not code.strip():
         raise RuntimeError("dashboard code is required")
@@ -168,6 +174,10 @@ def start_dashboard(code: str, port: int, app_id: str, session_id: str) -> None:
     panel_proc = None
 
     python = sys.executable or "/usr/bin/python3"
+    origins = allowed_origins or ["localhost:8080", "127.0.0.1:8080"]
+    origin_args = []
+    for origin in origins:
+        origin_args.extend(["--allow-websocket-origin", origin])
     panel_proc = subprocess.Popen(
         [
             python,
@@ -179,8 +189,7 @@ def start_dashboard(code: str, port: int, app_id: str, session_id: str) -> None:
             str(port),
             "--address",
             "0.0.0.0",
-            "--allow-websocket-origin",
-            "*",
+            *origin_args,
             "--prefix",
             f"/dash/{session_id}",
         ],
@@ -275,8 +284,9 @@ def handle_message(data: bytes) -> bytes:
         port = msg.get("port", 5006)
         app_id = msg.get("app_id", "")
         session_id = msg.get("session_id", "")
+        allowed_origins = msg.get("allowed_origins")
         try:
-            start_dashboard(code, port, app_id, session_id)
+            start_dashboard(code, port, app_id, session_id, allowed_origins=allowed_origins)
             return _encode_response({"status": "ok", "app_id": app_id, "port": port})
         except Exception as exc:
             return _encode_response({"status": "error", "message": str(exc)})

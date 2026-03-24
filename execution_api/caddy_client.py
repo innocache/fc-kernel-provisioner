@@ -32,15 +32,25 @@ class CaddyClient:
             ],
         }
 
+    async def _discover_server_key(self, http: aiohttp.ClientSession) -> str:
+        resp = await http.get(f"{self._admin_url}/config/apps/http/servers")
+        if resp.status != 200:
+            return "srv0"
+        servers = await resp.json()
+        if isinstance(servers, dict) and servers:
+            return next(iter(servers))
+        return "srv0"
+
     async def add_route(self, session_id: str, upstream: str) -> None:
         route = self._build_route(session_id, upstream)
         route_id = self._route_id(session_id)
         put_url = f"{self._admin_url}/id/{route_id}"
-        add_url = f"{self._admin_url}/config/apps/http/servers/main/routes/0"
 
         async with aiohttp.ClientSession() as http:
             resp = await http.put(put_url, json=route)
             if resp.status == 404:
+                server_key = await self._discover_server_key(http)
+                add_url = f"{self._admin_url}/config/apps/http/servers/{server_key}/routes/0"
                 resp = await http.post(add_url, json=route)
             if resp.status not in (200, 201):
                 body = await resp.text()
