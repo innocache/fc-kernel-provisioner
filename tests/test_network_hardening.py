@@ -31,24 +31,29 @@ class TestApplyVmRules:
         net._run = AsyncMock()
         await net.apply_vm_rules("tap-abc", "172.16.0.2", rate_limit_mbit=0, allowed_host_ports=(53, 8888))
         ipt_calls = [c for c in net._run.call_args_list if c.args[0] == "iptables"]
-        assert len(ipt_calls) == 5
+        assert len(ipt_calls) == 6
         assert ipt_calls[0] == call(
             "iptables", "-I", "INPUT", "-i", "fcbr0", "-s", "172.16.0.2",
-            "-p", "tcp", "--dport", "53", "-j", "ACCEPT",
+            "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED",
+            "-j", "ACCEPT",
         )
         assert ipt_calls[1] == call(
             "iptables", "-I", "INPUT", "-i", "fcbr0", "-s", "172.16.0.2",
-            "-p", "udp", "--dport", "53", "-j", "ACCEPT",
+            "-p", "tcp", "--dport", "53", "-j", "ACCEPT",
         )
         assert ipt_calls[2] == call(
             "iptables", "-I", "INPUT", "-i", "fcbr0", "-s", "172.16.0.2",
-            "-p", "tcp", "--dport", "8888", "-j", "ACCEPT",
+            "-p", "udp", "--dport", "53", "-j", "ACCEPT",
         )
         assert ipt_calls[3] == call(
             "iptables", "-I", "INPUT", "-i", "fcbr0", "-s", "172.16.0.2",
-            "-p", "udp", "--dport", "8888", "-j", "ACCEPT",
+            "-p", "tcp", "--dport", "8888", "-j", "ACCEPT",
         )
         assert ipt_calls[4] == call(
+            "iptables", "-I", "INPUT", "-i", "fcbr0", "-s", "172.16.0.2",
+            "-p", "udp", "--dport", "8888", "-j", "ACCEPT",
+        )
+        assert ipt_calls[5] == call(
             "iptables", "-A", "INPUT", "-i", "fcbr0", "-s", "172.16.0.2",
             "-j", "DROP",
         )
@@ -57,8 +62,9 @@ class TestApplyVmRules:
         net._run = AsyncMock()
         await net.apply_vm_rules("tap-abc", "172.16.0.2", rate_limit_mbit=0, allowed_host_ports=())
         ipt_calls = [c for c in net._run.call_args_list if c.args[0] == "iptables"]
-        assert len(ipt_calls) == 1
-        assert "-j" in ipt_calls[0].args and "DROP" in ipt_calls[0].args
+        assert len(ipt_calls) == 2
+        assert "ESTABLISHED,RELATED" in ipt_calls[0].args
+        assert "DROP" in ipt_calls[1].args
 
     async def test_combined_tc_and_iptables(self, net):
         net._run = AsyncMock()
@@ -86,7 +92,7 @@ class TestRemoveVmRules:
         net._run = AsyncMock()
         await net.remove_vm_rules("tap-abc", "172.16.0.2", rate_limit_mbit=0, allowed_host_ports=(53,))
         ipt_calls = [c for c in net._run.call_args_list if c.args[0] == "iptables"]
-        assert len(ipt_calls) == 3
+        assert len(ipt_calls) == 4
         assert ipt_calls[0] == call(
             "iptables", "-D", "INPUT", "-i", "fcbr0", "-s", "172.16.0.2",
             "-j", "DROP",
@@ -98,6 +104,11 @@ class TestRemoveVmRules:
         assert ipt_calls[2] == call(
             "iptables", "-D", "INPUT", "-i", "fcbr0", "-s", "172.16.0.2",
             "-p", "udp", "--dport", "53", "-j", "ACCEPT",
+        )
+        assert ipt_calls[3] == call(
+            "iptables", "-D", "INPUT", "-i", "fcbr0", "-s", "172.16.0.2",
+            "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED",
+            "-j", "ACCEPT",
         )
 
     async def test_iptables_removal_failure_ignored(self, net):

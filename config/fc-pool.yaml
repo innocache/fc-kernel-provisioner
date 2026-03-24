@@ -18,7 +18,7 @@ network:
   gateway: "172.16.0.1"
   vm_ip_start: 2
   rate_limit_mbit: 10
-  allowed_host_ports: [53]
+  allowed_host_ports: [53, 8888]
 
 jailer:
   enabled: true

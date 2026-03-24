@@ -97,6 +97,12 @@ class NetworkManager:
                 "burst", "32kbit", "latency", "400ms",
             )
 
+        await self._run(
+            "iptables", "-I", "INPUT",
+            "-i", self.bridge, "-s", vm_ip,
+            "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED",
+            "-j", "ACCEPT",
+        )
         for port in allowed_host_ports:
             for proto in ("tcp", "udp"):
                 await self._run(
@@ -140,6 +146,16 @@ class NetworkManager:
                     )
                 except subprocess.CalledProcessError:
                     pass
+
+        try:
+            await self._run(
+                "iptables", "-D", "INPUT",
+                "-i", self.bridge, "-s", vm_ip,
+                "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED",
+                "-j", "ACCEPT",
+            )
+        except subprocess.CalledProcessError:
+            pass
 
     async def _run(self, *cmd: str) -> None:
         proc = await asyncio.create_subprocess_exec(
