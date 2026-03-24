@@ -347,13 +347,13 @@ class TestNetworkReconfigure:
             mod.reconfigure_network(ip, mac, gateway)
 
         assert mock_run.call_args_list == [
-            call(["ip", "link", "set", "eth0", "down"], check=True, capture_output=True, timeout=5),
-            call(["ip", "link", "set", "eth0", "address", mac], check=True, capture_output=True, timeout=5),
-            call(["ip", "addr", "flush", "dev", "eth0"], check=True, capture_output=True, timeout=5),
-            call(["ip", "addr", "add", f"{ip}/24", "dev", "eth0"], check=True, capture_output=True, timeout=5),
-            call(["ip", "link", "set", "eth0", "up"], check=True, capture_output=True, timeout=5),
-            call(["ip", "route", "replace", "default", "via", gateway, "dev", "eth0"], check=True, capture_output=True, timeout=5),
-            call(["arping", "-c", "1", "-U", "-I", "eth0", ip], check=False, capture_output=True, timeout=5),
+            call(["/sbin/ip", "link", "set", "eth0", "down"], check=True, capture_output=True, timeout=5),
+            call(["/sbin/ip", "link", "set", "eth0", "address", mac], check=True, capture_output=True, timeout=5),
+            call(["/sbin/ip", "addr", "flush", "dev", "eth0"], check=True, capture_output=True, timeout=5),
+            call(["/sbin/ip", "addr", "add", f"{ip}/24", "dev", "eth0"], check=True, capture_output=True, timeout=5),
+            call(["/sbin/ip", "link", "set", "eth0", "up"], check=True, capture_output=True, timeout=5),
+            call(["/sbin/ip", "route", "replace", "default", "via", gateway, "dev", "eth0"], check=True, capture_output=True, timeout=5),
+            call(["/usr/sbin/arping", "-c", "1", "-U", "-I", "eth0", ip], check=False, capture_output=True, timeout=5),
         ]
 
     def test_reconfigure_network_missing_ip_returns_error(self):
@@ -412,7 +412,7 @@ class TestNetworkReconfigure:
         with patch("subprocess.run") as mock_run:
             mod.reconfigure_network("172.16.0.22", "02:fc:00:00:00:22", "172.16.0.1", netmask="16")
         assert mock_run.call_args_list[3] == call(
-            ["ip", "addr", "add", "172.16.0.22/16", "dev", "eth0"],
+            ["/sbin/ip", "addr", "add", "172.16.0.22/16", "dev", "eth0"],
             check=True,
             capture_output=True,
             timeout=5,

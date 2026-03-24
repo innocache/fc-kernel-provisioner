@@ -228,20 +228,21 @@ def reconfigure_network(ip: str, mac: str, gateway: str, netmask: str = "24") ->
     """Reconfigure eth0 with new IP/MAC after snapshot restore."""
     import subprocess as _sp
 
+    _ip = "/sbin/ip"
     cmds = [
-        ["ip", "link", "set", "eth0", "down"],
-        ["ip", "link", "set", "eth0", "address", mac],
-        ["ip", "addr", "flush", "dev", "eth0"],
-        ["ip", "addr", "add", f"{ip}/{netmask}", "dev", "eth0"],
-        ["ip", "link", "set", "eth0", "up"],
-        ["ip", "route", "replace", "default", "via", gateway, "dev", "eth0"],
+        [_ip, "link", "set", "eth0", "down"],
+        [_ip, "link", "set", "eth0", "address", mac],
+        [_ip, "addr", "flush", "dev", "eth0"],
+        [_ip, "addr", "add", f"{ip}/{netmask}", "dev", "eth0"],
+        [_ip, "link", "set", "eth0", "up"],
+        [_ip, "route", "replace", "default", "via", gateway, "dev", "eth0"],
     ]
     for cmd in cmds:
         _sp.run(cmd, check=True, capture_output=True, timeout=5)
 
     try:
         _sp.run(
-            ["arping", "-c", "1", "-U", "-I", "eth0", ip],
+            ["/usr/sbin/arping", "-c", "1", "-U", "-I", "eth0", ip],
             check=False, capture_output=True, timeout=5,
         )
     except FileNotFoundError:

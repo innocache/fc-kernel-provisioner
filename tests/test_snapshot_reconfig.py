@@ -171,8 +171,7 @@ async def test_restore_reconfig_failure_still_reattaches(tmp_path):
     with patch("fc_pool_manager.manager.FirecrackerAPI", return_value=api), \
          patch("fc_pool_manager.vsock.vsock_request", new=AsyncMock(side_effect=RuntimeError("boom"))), \
          patch("os.chown"):
-        with pytest.raises(RuntimeError, match="boom"):
-            await manager._restore_from_snapshot(vm)
+        await manager._restore_from_snapshot(vm)
 
     manager._network.attach_to_bridge.assert_awaited_once_with(vm.tap_name)
 
