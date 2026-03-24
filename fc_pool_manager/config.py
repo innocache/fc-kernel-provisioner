@@ -12,6 +12,7 @@ class PoolConfig:
     max_vms: int
     health_check_interval: int
     vm_idle_timeout: int
+    snapshot_dir: str
 
     vm_vcpu: int
     vm_mem_mib: int
@@ -47,6 +48,7 @@ class PoolConfig:
             max_vms=pool["max_vms"],
             health_check_interval=pool.get("health_check_interval", 30),
             vm_idle_timeout=pool.get("vm_idle_timeout", 600),
+            snapshot_dir=pool.get("snapshot_dir", "/var/lib/fc-snapshots"),
             vm_vcpu=vm["vcpu"],
             vm_mem_mib=vm["mem_mib"],
             vm_kernel=vm["kernel"],

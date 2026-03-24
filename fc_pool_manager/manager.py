@@ -21,6 +21,7 @@ from .metrics import (
     RELEASE_TOTAL,
 )
 from .network import NetworkManager
+from .snapshot import SnapshotManager
 from .vm import CIDAllocator, VMInstance, VMState
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,13 @@ class PoolManager:
         self._boot_lock = asyncio.Lock()
         self._acquire_lock = asyncio.Lock()
         self._kernel_to_vm: dict[str, str] = {}
+        self._snapshot = SnapshotManager(
+            snapshot_dir=config.snapshot_dir,
+            kernel_path=config.vm_kernel,
+            rootfs_path=config.vm_rootfs,
+            firecracker_path=config.firecracker_path,
+        )
+        self._snapshot_checked = False
         POOL_MAX_VMS.set(config.max_vms)
 
     def _update_vm_gauges(self) -> None:
@@ -190,8 +198,7 @@ class PoolManager:
         except Exception:
             return {"alive": False}
 
-    async def _boot_vm(self) -> VMInstance:
-        """Boot a new jailed Firecracker VM."""
+    async def _boot_vm(self, use_snapshot: bool = True) -> VMInstance:
         short_id = secrets.token_hex(8)
         vm_id = f"vm-{short_id}"
         ip = self._network.allocate_ip()
@@ -212,19 +219,7 @@ class PoolManager:
         self._vms[vm_id] = vm
 
         try:
-            os.makedirs(jail_path, exist_ok=True)
-            kernel_dest = os.path.join(jail_path, "vmlinux")
-            if not os.path.exists(kernel_dest):
-                os.link(self._config.vm_kernel, kernel_dest)
-            overlay_dest = os.path.join(jail_path, "overlay.ext4")
-            # Use cp --reflink=auto for CoW on supported filesystems (btrfs, xfs)
-            await self._run_subprocess("cp", "--reflink=auto", self._config.vm_rootfs, overlay_dest)
-
-            # Jailer drops privileges — files must be owned by the jailer user
-            uid = self._config.jailer_uid
-            gid = self._config.jailer_gid
-            os.chown(kernel_dest, uid, gid)
-            os.chown(overlay_dest, uid, gid)
+            await self._prepare_jail_root(vm)
 
             await self._network.create_tap(short_id)
             await self._network.apply_vm_rules(
@@ -233,46 +228,12 @@ class PoolManager:
                 self._config.allowed_host_ports,
             )
 
-            boot_args = self._config.boot_args_template.replace("{vm_ip}", ip)
-            jailer_cmd = [
-                "jailer", "--id", vm_id,
-                "--exec-file", self._config.firecracker_path,
-                "--uid", str(self._config.jailer_uid),
-                "--gid", str(self._config.jailer_gid),
-                "--chroot-base-dir", self._config.chroot_base,
-            ]
-            jailer_proc = await asyncio.create_subprocess_exec(
-                *jailer_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            vm.jailer_process = jailer_proc
+            if use_snapshot and self._snapshot.has_valid_snapshot():
+                await self._restore_from_snapshot(vm)
+            else:
+                await self._full_boot(vm)
 
-            api_socket = os.path.join(jail_path, "run", "firecracker.socket")
-            await self._wait_for_socket(api_socket, timeout=10)
-
-            api = FirecrackerAPI(api_socket)
-            await api.configure_machine(self._config.vm_vcpu, self._config.vm_mem_mib)
-            await api.configure_boot_source("vmlinux", boot_args)
-            await api.configure_drive("rootfs", "overlay.ext4", is_root=True)
-            await api.configure_network("eth0", tap_name, mac)
-            await api.configure_vsock(cid, "v.sock")
-            await api.configure_entropy()
-            await api.start()
-
-            # Wait for guest agent to start (VM needs time to boot)
-            from .vsock import vsock_request
-            boot_deadline = asyncio.get_event_loop().time() + 30
-            while True:
-                try:
-                    resp = await vsock_request(vsock_path, {"action": "ping"}, timeout=5)
-                    if resp.get("status") == "alive":
-                        break
-                    raise RuntimeError(f"Guest agent not ready: {resp}")
-                except (ConnectionError, OSError):
-                    if asyncio.get_event_loop().time() > boot_deadline:
-                        raise RuntimeError("Guest agent did not start within 30s")
-                    await asyncio.sleep(0.5)
+            await self._wait_for_guest_agent(vm)
 
             vm.transition_to(VMState.IDLE)
             boot_secs = asyncio.get_event_loop().time() - vm.created_at
@@ -285,6 +246,134 @@ class PoolManager:
             await self._destroy_vm(vm)
             del self._vms[vm_id]
             raise
+
+    async def _prepare_jail_root(self, vm: VMInstance) -> None:
+        os.makedirs(vm.jail_path, exist_ok=True)
+        kernel_dest = os.path.join(vm.jail_path, "vmlinux")
+        if not os.path.exists(kernel_dest):
+            os.link(self._config.vm_kernel, kernel_dest)
+        overlay_dest = os.path.join(vm.jail_path, "overlay.ext4")
+        await self._run_subprocess("cp", "--reflink=auto", self._config.vm_rootfs, overlay_dest)
+
+        uid = self._config.jailer_uid
+        gid = self._config.jailer_gid
+        os.chown(kernel_dest, uid, gid)
+        os.chown(overlay_dest, uid, gid)
+
+    async def _start_jailer(self, vm: VMInstance) -> str:
+        jailer_cmd = [
+            "jailer", "--id", vm.vm_id,
+            "--exec-file", self._config.firecracker_path,
+            "--uid", str(self._config.jailer_uid),
+            "--gid", str(self._config.jailer_gid),
+            "--chroot-base-dir", self._config.chroot_base,
+        ]
+        jailer_proc = await asyncio.create_subprocess_exec(
+            *jailer_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        vm.jailer_process = jailer_proc
+
+        api_socket = os.path.join(vm.jail_path, "run", "firecracker.socket")
+        await self._wait_for_socket(api_socket, timeout=10)
+        return api_socket
+
+    async def _full_boot(self, vm: VMInstance) -> None:
+        boot_args = self._config.boot_args_template.replace("{vm_ip}", vm.ip)
+        api_socket = await self._start_jailer(vm)
+
+        api = FirecrackerAPI(api_socket)
+        await api.configure_machine(self._config.vm_vcpu, self._config.vm_mem_mib)
+        await api.configure_boot_source("vmlinux", boot_args)
+        await api.configure_drive("rootfs", "overlay.ext4", is_root=True)
+        await api.configure_network("eth0", vm.tap_name, vm.mac)
+        await api.configure_vsock(vm.cid, "v.sock")
+        await api.configure_entropy()
+        await api.start()
+
+    async def _restore_from_snapshot(self, vm: VMInstance) -> None:
+        vmstate_dest = os.path.join(vm.jail_path, "vmstate")
+        memory_dest = os.path.join(vm.jail_path, "memory")
+        for path in (vmstate_dest, memory_dest):
+            if os.path.exists(path):
+                os.remove(path)
+        os.link(self._snapshot.vmstate_path, vmstate_dest)
+        os.link(self._snapshot.memory_path, memory_dest)
+        os.chown(vmstate_dest, self._config.jailer_uid, self._config.jailer_gid)
+        os.chown(memory_dest, self._config.jailer_uid, self._config.jailer_gid)
+
+        api_socket = await self._start_jailer(vm)
+        api = FirecrackerAPI(api_socket)
+        await api.load_snapshot(
+            snapshot_path="vmstate",
+            mem_path="memory",
+            network_overrides=[{"iface_id": "eth0", "host_dev_name": vm.tap_name}],
+        )
+        await api.resume()
+
+    async def _wait_for_guest_agent(self, vm: VMInstance) -> None:
+        from .vsock import vsock_request
+
+        boot_deadline = asyncio.get_event_loop().time() + 30
+        while True:
+            try:
+                resp = await vsock_request(vm.vsock_path, {"action": "ping"}, timeout=5)
+                if resp.get("status") == "alive":
+                    return
+                raise RuntimeError(f"Guest agent not ready: {resp}")
+            except (ConnectionError, OSError):
+                if asyncio.get_event_loop().time() > boot_deadline:
+                    raise RuntimeError("Guest agent did not start within 30s")
+                await asyncio.sleep(0.5)
+
+    async def create_golden_snapshot(self) -> None:
+        vm: VMInstance | None = None
+        try:
+            vm = await self._boot_vm(use_snapshot=False)
+            api_socket = os.path.join(vm.jail_path, "run", "firecracker.socket")
+            api = FirecrackerAPI(api_socket)
+            await api.pause()
+            await api.create_snapshot("vmstate", "memory")
+
+            os.makedirs(self._config.snapshot_dir, exist_ok=True)
+            await asyncio.to_thread(
+                shutil.copy2,
+                os.path.join(vm.jail_path, "vmstate"),
+                self._snapshot.vmstate_path,
+            )
+            await asyncio.to_thread(
+                shutil.copy2,
+                os.path.join(vm.jail_path, "memory"),
+                self._snapshot.memory_path,
+            )
+            self._snapshot.save_metadata()
+            logger.info("Created golden snapshot in %s", self._config.snapshot_dir)
+        except Exception:
+            self._snapshot.invalidate()
+            raise
+        finally:
+            if vm is not None:
+                self._vms.pop(vm.vm_id, None)
+                await self._destroy_vm(vm)
+
+    async def ensure_golden_snapshot(self) -> None:
+        if self._snapshot_checked:
+            return
+        self._snapshot_checked = True
+        if self._snapshot.has_valid_snapshot():
+            return
+        if not (
+            os.path.isfile(self._config.vm_kernel)
+            and os.path.isfile(self._config.vm_rootfs)
+            and os.path.isfile(self._config.firecracker_path)
+        ):
+            return
+        logger.info("Creating golden snapshot...")
+        try:
+            await self.create_golden_snapshot()
+        except Exception as exc:
+            logger.warning("Failed to create golden snapshot: %s", exc)
 
     async def _destroy_vm(self, vm: VMInstance) -> None:
         """Tear down a VM: kill jailer, delete TAP, remove jail dir."""
@@ -310,6 +399,7 @@ class PoolManager:
 
     async def replenish(self) -> None:
         """Boot VMs until idle count meets pool_size."""
+        await self.ensure_golden_snapshot()
         async with self._boot_lock:
             while (
                 self.idle_count < self._config.pool_size
