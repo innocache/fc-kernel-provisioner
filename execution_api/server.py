@@ -176,23 +176,24 @@ class SessionManager:
         if entry is None:
             return False
 
-        if entry.vsock_path and entry.active_dashboard:
-            try:
-                await _vsock_request(entry.vsock_path, {"action": "stop_dashboard"}, timeout=10)
-            except Exception:
-                logger.debug("Failed to stop dashboard during delete", exc_info=True)
+        async with entry.lock:
+            if entry.vsock_path and entry.active_dashboard:
+                try:
+                    await _vsock_request(entry.vsock_path, {"action": "stop_dashboard"}, timeout=10)
+                except Exception:
+                    logger.debug("Failed to stop dashboard during delete", exc_info=True)
+
+                try:
+                    await caddy.remove_route(session_id)
+                except Exception:
+                    logger.debug("Failed to remove dashboard route during delete", exc_info=True)
+
+                entry.active_dashboard = None
 
             try:
-                await caddy.remove_route(session_id)
+                await entry.session.stop()
             except Exception:
-                logger.debug("Failed to remove dashboard route during delete", exc_info=True)
-
-            entry.active_dashboard = None
-
-        try:
-            await entry.session.stop()
-        except Exception:
-            logger.debug("Failed to stop session %s", session_id, exc_info=True)
+                logger.debug("Failed to stop session %s", session_id, exc_info=True)
         return True
 
     def list_sessions(self) -> list[SessionEntry]:
