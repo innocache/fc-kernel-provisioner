@@ -105,7 +105,7 @@ async def test_restore_sends_correct_reconfig_message(tmp_path):
          patch("os.chown"):
         await manager._restore_from_snapshot(vm)
 
-    vsock.assert_awaited_once_with(
+    assert vsock.await_args_list[0] == call(
         vm.vsock_path,
         {
             "action": "reconfigure_network",
@@ -113,6 +113,11 @@ async def test_restore_sends_correct_reconfig_message(tmp_path):
             "mac": vm.mac,
             "gateway": manager._config.gateway,
         },
+        timeout=10,
+    )
+    assert vsock.await_args_list[1] == call(
+        vm.vsock_path,
+        {"action": "get_kernel_info"},
         timeout=10,
     )
 

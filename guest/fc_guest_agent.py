@@ -29,6 +29,17 @@ panel_proc = None
 boot_time = time.monotonic()
 _APPS_DIR = "/apps"
 
+_kernel_key: str | None = None
+_kernel_ports: dict | None = None
+
+_DEFAULT_PORTS = {
+    "shell_port": 5555,
+    "iopub_port": 5556,
+    "stdin_port": 5557,
+    "control_port": 5558,
+    "hb_port": 5559,
+}
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -140,6 +151,28 @@ def start_kernel(ports: dict, key: str, ip: str) -> int:
         raise RuntimeError(with_log_context(str(exc))) from exc
 
     return kernel_proc.pid
+
+
+def pre_warm_kernel() -> dict:
+    global _kernel_key, _kernel_ports, kernel_proc
+
+    import secrets
+
+    _kernel_key = secrets.token_hex(32)
+    _kernel_ports = dict(_DEFAULT_PORTS)
+
+    ip = "0.0.0.0"
+    pid = start_kernel(_kernel_ports, _kernel_key, ip)
+
+    return {"key": _kernel_key, "ports": _kernel_ports, "pid": pid}
+
+
+def get_kernel_info() -> dict:
+    return {
+        "key": _kernel_key,
+        "ports": _kernel_ports,
+        "running": kernel_proc is not None and kernel_proc.poll() is None,
+    }
 
 
 def _kill_proc(proc: subprocess.Popen, timeout: float = 5.0) -> None:
@@ -303,6 +336,17 @@ def handle_message(data: bytes) -> bytes:
             return _encode_response({"status": "ready", "pid": pid})
         except Exception as exc:
             return _encode_response({"status": "error", "message": str(exc)})
+
+    elif action == "pre_warm_kernel":
+        try:
+            info = pre_warm_kernel()
+            return _encode_response({"status": "ok", **info})
+        except Exception as e:
+            return _encode_response({"status": "error", "message": str(e)})
+
+    elif action == "get_kernel_info":
+        info = get_kernel_info()
+        return _encode_response({"status": "ok", **info})
 
     elif action == "launch_dashboard":
         code = msg.get("code", "")

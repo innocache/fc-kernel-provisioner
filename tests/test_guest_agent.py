@@ -233,6 +233,100 @@ class TestHandleMessage:
         assert response["status"] == "error"
 
 
+class TestPreWarmKernel:
+    def _get_fresh_mod(self):
+        mod = load_agent_module()
+        mod.kernel_proc = None
+        mod._kernel_key = None
+        mod._kernel_ports = None
+        return mod
+
+    def test_pre_warm_kernel_starts_kernel(self, tmp_path):
+        mod = self._get_fresh_mod()
+        mock_proc = MagicMock()
+        mock_proc.pid = 43210
+        mock_proc.poll.return_value = None
+        with patch.object(mod, "_CONN_FILE", str(tmp_path / "conn.json")), \
+             patch.object(mod, "_KERNEL_LOG", str(tmp_path / "kernel.log")), \
+             patch("secrets.token_hex", return_value="a" * 64), \
+             patch.object(mod, "start_kernel", wraps=mod.start_kernel) as mock_start, \
+             patch("subprocess.Popen", return_value=mock_proc), \
+             patch("time.sleep"), \
+             patch.object(mod, "wait_for_kernel_ports"):
+            mod.pre_warm_kernel()
+
+        mock_start.assert_called_once_with(mod._DEFAULT_PORTS, "a" * 64, "0.0.0.0")
+
+    def test_pre_warm_kernel_stores_key_and_ports(self, tmp_path):
+        mod = self._get_fresh_mod()
+        mock_proc = MagicMock()
+        mock_proc.pid = 11111
+        mock_proc.poll.return_value = None
+        with patch.object(mod, "_CONN_FILE", str(tmp_path / "conn.json")), \
+             patch.object(mod, "_KERNEL_LOG", str(tmp_path / "kernel.log")), \
+             patch("secrets.token_hex", return_value="b" * 64), \
+             patch("subprocess.Popen", return_value=mock_proc), \
+             patch("time.sleep"), \
+             patch.object(mod, "wait_for_kernel_ports"):
+            info = mod.pre_warm_kernel()
+
+        assert mod._kernel_key == "b" * 64
+        assert mod._kernel_ports == mod._DEFAULT_PORTS
+        assert info["key"] == "b" * 64
+        assert info["ports"] == mod._DEFAULT_PORTS
+
+    def test_get_kernel_info_returns_stored_values(self):
+        mod = self._get_fresh_mod()
+        proc = MagicMock()
+        proc.poll.return_value = None
+        mod.kernel_proc = proc
+        mod._kernel_key = "c" * 64
+        mod._kernel_ports = dict(mod._DEFAULT_PORTS)
+
+        info = mod.get_kernel_info()
+
+        assert info["key"] == "c" * 64
+        assert info["ports"] == mod._DEFAULT_PORTS
+        assert info["running"] is True
+
+    def test_get_kernel_info_before_prewarm(self):
+        mod = self._get_fresh_mod()
+
+        info = mod.get_kernel_info()
+
+        assert info["key"] is None
+        assert info["ports"] is None
+        assert info["running"] is False
+
+    def test_pre_warm_kernel_handle_message(self):
+        mod = self._get_fresh_mod()
+        msg = {"action": "pre_warm_kernel"}
+
+        with patch("secrets.token_hex", return_value="d" * 64), \
+             patch.object(mod, "start_kernel", return_value=54321):
+            response = _decode(mod.handle_message(_encode(msg)))
+
+        assert response["status"] == "ok"
+        assert response["key"] == "d" * 64
+        assert response["ports"] == mod._DEFAULT_PORTS
+        assert response["pid"] == 54321
+
+    def test_get_kernel_info_handle_message(self):
+        mod = self._get_fresh_mod()
+        mod._kernel_key = "e" * 64
+        mod._kernel_ports = dict(mod._DEFAULT_PORTS)
+        proc = MagicMock()
+        proc.poll.return_value = None
+        mod.kernel_proc = proc
+
+        response = _decode(mod.handle_message(_encode({"action": "get_kernel_info"})))
+
+        assert response["status"] == "ok"
+        assert response["key"] == "e" * 64
+        assert response["ports"] == mod._DEFAULT_PORTS
+        assert response["running"] is True
+
+
 class TestDashboardLifecycle:
     def _get_fresh_mod(self):
         mod = load_agent_module()
