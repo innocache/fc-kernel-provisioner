@@ -211,6 +211,26 @@ if [[ "$UNIT_ONLY" == "true" ]]; then
     exit 0  # Triggers trap → teardown → exit $TEST_RC
 fi
 
+# Ensure XFS loopback is mounted for reflink support
+step "Ensuring XFS mount at /srv/jailer..."
+ssh "$HOST" "
+    if ! mountpoint -q /srv/jailer; then
+        if [ -f /var/lib/fc-jailer.xfs ]; then
+            sudo mount -o loop /var/lib/fc-jailer.xfs /srv/jailer
+        else
+            sudo apt-get install -y xfsprogs >/dev/null 2>&1
+            sudo truncate -s 50G /var/lib/fc-jailer.xfs
+            sudo mkfs.xfs -m reflink=1 /var/lib/fc-jailer.xfs >/dev/null 2>&1
+            sudo mount -o loop /var/lib/fc-jailer.xfs /srv/jailer
+        fi
+    fi
+    sudo mkdir -p /srv/jailer/images /srv/jailer/snapshots
+    [ -f /srv/jailer/images/vmlinux ] || sudo cp /opt/firecracker/vmlinux /srv/jailer/images/
+    [ -f /srv/jailer/images/rootfs.ext4 ] || sudo cp /opt/firecracker/rootfs.ext4 /srv/jailer/images/
+    mountpoint -q /srv/jailer && echo 'XFS ready' || echo 'FAIL'
+"
+info "XFS mount verified ✓"
+
 # Install kernelspec (no sudo — installs into user-owned venv with --sys-prefix)
 step "Installing kernelspec..."
 ssh "$HOST" "cd $REMOTE_DIR && uv run jupyter kernelspec install config/kernelspec/ --name python3-firecracker --sys-prefix"
