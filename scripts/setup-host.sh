@@ -61,6 +61,7 @@ cmd_status() {
     _check "IP forwarding sysctl"               "[[ -f /etc/sysctl.d/99-firecracker.conf ]]"
     _check "Host limits env"                    "[[ -f ${FC_DIR}/host-limits.env ]]"
     _check "IP forwarding enabled (runtime)"    "[[ \$(cat /proc/sys/net/ipv4/ip_forward) == 1 ]]"
+    _check "caddy binary"                      "command -v caddy"
 
     echo ""
     info "${present} present, ${absent} absent"
@@ -117,6 +118,10 @@ cmd_teardown() {
     if [[ -x /usr/bin/jailer ]]; then
         info "Removing /usr/bin/jailer"
         rm -f /usr/bin/jailer
+    fi
+    if [[ -x /usr/local/bin/caddy ]]; then
+        info "Removing /usr/local/bin/caddy"
+        rm -f /usr/local/bin/caddy
     fi
 
     # Remove directories
@@ -246,6 +251,14 @@ cmd_setup() {
     firecracker --version
     jailer --version
     info "Firecracker installed ✓"
+
+    if ! command -v caddy &>/dev/null; then
+        info "Downloading Caddy..."
+        curl -sS "https://caddyserver.com/api/download?os=linux&arch=amd64" -o /usr/local/bin/caddy
+        chmod +x /usr/local/bin/caddy
+    fi
+    caddy version
+    info "Caddy installed ✓"
 
     # ── Step 4: Download Linux kernel ────────────────────────────────────────
 
