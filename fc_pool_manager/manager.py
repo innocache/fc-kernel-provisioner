@@ -227,6 +227,11 @@ class PoolManager:
             os.chown(overlay_dest, uid, gid)
 
             await self._network.create_tap(short_id)
+            await self._network.apply_vm_rules(
+                tap_name, ip,
+                self._config.rate_limit_mbit,
+                self._config.allowed_host_ports,
+            )
 
             boot_args = self._config.boot_args_template.replace("{vm_ip}", ip)
             jailer_cmd = [
@@ -291,6 +296,11 @@ class PoolManager:
                 vm.jailer_process.kill()
                 await vm.jailer_process.wait()
 
+        await self._network.remove_vm_rules(
+            vm.tap_name, vm.ip,
+            self._config.rate_limit_mbit,
+            self._config.allowed_host_ports,
+        )
         await self._network.delete_tap(vm.tap_name)
         self._network.release_ip(vm.ip)
         self._cid_alloc.release(vm.cid)

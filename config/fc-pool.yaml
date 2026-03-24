@@ -17,6 +17,8 @@ network:
   subnet: "172.16.0.0/24"
   gateway: "172.16.0.1"
   vm_ip_start: 2
+  rate_limit_mbit: 10
+  allowed_host_ports: [53]
 
 jailer:
   enabled: true
