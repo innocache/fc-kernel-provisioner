@@ -1,10 +1,9 @@
-"""Monkey-patch jupyter_client to reduce kernel_info poll interval.
+"""Monkey-patch jupyter_client to reduce kernel_info poll interval from 1.0s to 0.1s.
 
-The default _async_wait_for_ready polls every 1.0s (shell_channel.get_msg
-timeout). This patch reduces it to 0.1s for faster kernel startup detection.
+The jupyter_server nudge interval (0.5s) must be patched via sed on the
+vendored file — see scripts/patch_jupyter_polling.sh.
 
-Apply once at import time:
-    import fc_provisioner.kernel_ready_patch  # noqa: F401
+Import once at provisioner load time to apply the client-side patch.
 """
 
 import asyncio
@@ -13,8 +12,7 @@ import time
 from jupyter_client.client import KernelClient
 from jupyter_client.utils import ensure_async
 
-_POLL_INTERVAL = 0.1
-_IOPUB_TIMEOUT = 0.05
+_FAST_INTERVAL = 0.1
 
 
 async def _fast_wait_for_ready(self, timeout=None):
@@ -35,13 +33,13 @@ async def _fast_wait_for_ready(self, timeout=None):
     while True:
         self.kernel_info()
         try:
-            msg = await ensure_async(self.shell_channel.get_msg(timeout=_POLL_INTERVAL))
+            msg = await ensure_async(self.shell_channel.get_msg(timeout=_FAST_INTERVAL))
         except Exception:
             pass
         else:
             if msg["msg_type"] == "kernel_info_reply":
                 try:
-                    await ensure_async(self.iopub_channel.get_msg(timeout=_IOPUB_TIMEOUT))
+                    await ensure_async(self.iopub_channel.get_msg(timeout=0.05))
                 except Exception:
                     pass
                 else:
@@ -56,7 +54,7 @@ async def _fast_wait_for_ready(self, timeout=None):
 
     while True:
         try:
-            await ensure_async(self.iopub_channel.get_msg(timeout=_IOPUB_TIMEOUT))
+            await ensure_async(self.iopub_channel.get_msg(timeout=0.05))
         except Exception:
             break
 
