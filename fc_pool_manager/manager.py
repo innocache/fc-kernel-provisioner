@@ -130,11 +130,15 @@ class PoolManager:
                     vm.transition_to(VMState.ASSIGNED)
                     logger.info("Acquired VM %s (ip=%s, cid=%d)", vm.vm_id, vm.ip, vm.cid)
                     asyncio.create_task(self.replenish())  # backfill pool
-                    return {
+                    result: dict[str, Any] = {
                         "id": vm.vm_id,
                         "ip": vm.ip,
                         "vsock_path": vm.vsock_path,
                     }
+                    if vm.kernel_key and vm.kernel_ports:
+                        result["kernel_key"] = vm.kernel_key
+                        result["kernel_ports"] = vm.kernel_ports
+                    return result
 
             if self.total_count >= self._config.max_vms:
                 raise RuntimeError("pool_exhausted")
@@ -143,11 +147,15 @@ class PoolManager:
             logger.info("No idle VMs, booting on demand")
             vm = await self._boot_vm()
             vm.transition_to(VMState.ASSIGNED)
-            return {
+            result: dict[str, Any] = {
                 "id": vm.vm_id,
                 "ip": vm.ip,
                 "vsock_path": vm.vsock_path,
             }
+            if vm.kernel_key and vm.kernel_ports:
+                result["kernel_key"] = vm.kernel_key
+                result["kernel_ports"] = vm.kernel_ports
+            return result
 
     async def release(self, vm_id: str, destroy: bool = True) -> None:
         """Release a VM back to the pool or destroy it."""
@@ -236,6 +244,25 @@ class PoolManager:
 
             await self._wait_for_guest_agent(vm)
 
+            from .vsock import vsock_request
+            try:
+                resp = await vsock_request(
+                    vm.vsock_path,
+                    {"action": "pre_warm_kernel"},
+                    timeout=120,
+                )
+                if resp.get("status") == "ok":
+                    vm.kernel_key = resp["key"]
+                    vm.kernel_ports = resp["ports"]
+                    key_preview = vm.kernel_key[:8] if vm.kernel_key else ""
+                    logger.info(
+                        "Pre-warmed kernel for %s (key=%s...)",
+                        vm.vm_id,
+                        key_preview,
+                    )
+            except Exception as exc:
+                logger.warning("Failed to pre-warm kernel for %s: %s", vm.vm_id, exc)
+
             vm.transition_to(VMState.IDLE)
             boot_secs = asyncio.get_event_loop().time() - vm.created_at
             BOOT_DURATION.observe(boot_secs)
@@ -310,6 +337,9 @@ class PoolManager:
                 "ip", "link", "set", vm.tap_name, "name", golden_tap,
             )
 
+        current_tap = golden_tap if golden_tap and golden_tap != vm.tap_name else vm.tap_name
+        await self._network.detach_from_bridge(current_tap)
+
         api_socket = await self._start_jailer(vm)
         api = FirecrackerAPI(api_socket)
         await api.load_snapshot(
@@ -322,6 +352,44 @@ class PoolManager:
             await self._network._run(
                 "ip", "link", "set", golden_tap, "name", vm.tap_name,
             )
+
+        from .vsock import vsock_request
+        reconfig_ok = False
+        try:
+            resp = await vsock_request(
+                vm.vsock_path,
+                {
+                    "action": "reconfigure_network",
+                    "ip": vm.ip,
+                    "mac": vm.mac,
+                    "gateway": self._config.gateway,
+                },
+                timeout=10,
+            )
+            if resp.get("status") == "ok":
+                reconfig_ok = True
+                logger.info("Reconfigured network for %s: ip=%s mac=%s", vm.vm_id, vm.ip, vm.mac)
+            else:
+                logger.error("reconfigure_network failed for %s: %s", vm.vm_id, resp)
+        except Exception as exc:
+            logger.error("reconfigure_network vsock error for %s: %s", vm.vm_id, exc)
+
+        if reconfig_ok:
+            await self._network.attach_to_bridge(vm.tap_name)
+        else:
+            raise RuntimeError(f"Network reconfig failed for {vm.vm_id}, VM will be destroyed")
+
+        try:
+            resp = await vsock_request(
+                vm.vsock_path,
+                {"action": "get_kernel_info"},
+                timeout=10,
+            )
+            if resp.get("status") == "ok" and resp.get("running"):
+                vm.kernel_key = resp["key"]
+                vm.kernel_ports = resp["ports"]
+        except Exception as exc:
+            logger.warning("Failed to get kernel info for %s: %s", vm.vm_id, exc)
 
     async def _wait_for_guest_agent(self, vm: VMInstance) -> None:
         from .vsock import vsock_request
@@ -398,6 +466,19 @@ class PoolManager:
             )
             await self._full_boot(vm)
             await self._wait_for_guest_agent(vm)
+
+            from .vsock import vsock_request
+            try:
+                resp = await vsock_request(
+                    vm.vsock_path,
+                    {"action": "pre_warm_kernel"},
+                    timeout=120,
+                )
+                if resp.get("status") == "ok":
+                    logger.info("Pre-warmed kernel in ephemeral VM %s", vm.vm_id)
+            except Exception:
+                pass
+
             return vm
         except Exception:
             await self._destroy_vm(vm)

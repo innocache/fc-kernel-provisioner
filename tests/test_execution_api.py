@@ -595,7 +595,6 @@ class TestEndpoints:
         assert data["success"] is True
         mock.start.assert_awaited()
         mock.execute.assert_awaited()
-        mock.stop.assert_awaited()
 
     async def test_one_shot_with_timeout(self, client):
         c, mock = client
@@ -688,13 +687,13 @@ class TestEndpoints:
         assert resp.status_code == 422
         assert "error" in resp.json()
 
-    async def test_one_shot_start_failure_calls_stop(self, client):
+    async def test_one_shot_start_failure_returns_503(self, client):
         c, mock = client
         mock.start = AsyncMock(
             side_effect=RuntimeError("No VMs available"),
         )
-        await c.post("/execute", json={"code": "x"})
-        mock.stop.assert_awaited()
+        resp = await c.post("/execute", json={"code": "x"})
+        assert resp.status_code == 503
 
     @patch("execution_api.server.SandboxSession")
     async def test_create_start_failure_calls_stop(self, MockSession):

@@ -153,7 +153,7 @@ class TestHandleMessage:
 
         assert response["status"] == "ready"
         assert response["pid"] == 12345
-        mock_wait.assert_called_once_with("172.16.0.2", msg["ports"])
+        mock_wait.assert_called_once_with("172.16.0.2", msg["ports"], proc=mock_proc)
         assert mock_popen.call_args.kwargs["env"]["PYTHONHASHSEED"] == "0"
 
     def test_ping_response(self):
@@ -231,6 +231,100 @@ class TestHandleMessage:
         response = _decode(mod.handle_message(_encode(msg)))
 
         assert response["status"] == "error"
+
+
+class TestPreWarmKernel:
+    def _get_fresh_mod(self):
+        mod = load_agent_module()
+        mod.kernel_proc = None
+        mod._kernel_key = None
+        mod._kernel_ports = None
+        return mod
+
+    def test_pre_warm_kernel_starts_kernel(self, tmp_path):
+        mod = self._get_fresh_mod()
+        mock_proc = MagicMock()
+        mock_proc.pid = 43210
+        mock_proc.poll.return_value = None
+        with patch.object(mod, "_CONN_FILE", str(tmp_path / "conn.json")), \
+             patch.object(mod, "_KERNEL_LOG", str(tmp_path / "kernel.log")), \
+             patch("secrets.token_hex", return_value="a" * 64), \
+             patch.object(mod, "start_kernel", wraps=mod.start_kernel) as mock_start, \
+             patch("subprocess.Popen", return_value=mock_proc), \
+             patch("time.sleep"), \
+             patch.object(mod, "wait_for_kernel_ports"):
+            mod.pre_warm_kernel()
+
+        mock_start.assert_called_once_with(mod._DEFAULT_PORTS, "a" * 64, "0.0.0.0")
+
+    def test_pre_warm_kernel_stores_key_and_ports(self, tmp_path):
+        mod = self._get_fresh_mod()
+        mock_proc = MagicMock()
+        mock_proc.pid = 11111
+        mock_proc.poll.return_value = None
+        with patch.object(mod, "_CONN_FILE", str(tmp_path / "conn.json")), \
+             patch.object(mod, "_KERNEL_LOG", str(tmp_path / "kernel.log")), \
+             patch("secrets.token_hex", return_value="b" * 64), \
+             patch("subprocess.Popen", return_value=mock_proc), \
+             patch("time.sleep"), \
+             patch.object(mod, "wait_for_kernel_ports"):
+            info = mod.pre_warm_kernel()
+
+        assert mod._kernel_key == "b" * 64
+        assert mod._kernel_ports == mod._DEFAULT_PORTS
+        assert info["key"] == "b" * 64
+        assert info["ports"] == mod._DEFAULT_PORTS
+
+    def test_get_kernel_info_returns_stored_values(self):
+        mod = self._get_fresh_mod()
+        proc = MagicMock()
+        proc.poll.return_value = None
+        mod.kernel_proc = proc
+        mod._kernel_key = "c" * 64
+        mod._kernel_ports = dict(mod._DEFAULT_PORTS)
+
+        info = mod.get_kernel_info()
+
+        assert info["key"] == "c" * 64
+        assert info["ports"] == mod._DEFAULT_PORTS
+        assert info["running"] is True
+
+    def test_get_kernel_info_before_prewarm(self):
+        mod = self._get_fresh_mod()
+
+        info = mod.get_kernel_info()
+
+        assert info["key"] is None
+        assert info["ports"] is None
+        assert info["running"] is False
+
+    def test_pre_warm_kernel_handle_message(self):
+        mod = self._get_fresh_mod()
+        msg = {"action": "pre_warm_kernel"}
+
+        with patch("secrets.token_hex", return_value="d" * 64), \
+             patch.object(mod, "start_kernel", return_value=54321):
+            response = _decode(mod.handle_message(_encode(msg)))
+
+        assert response["status"] == "ok"
+        assert response["key"] == "d" * 64
+        assert response["ports"] == mod._DEFAULT_PORTS
+        assert response["pid"] == 54321
+
+    def test_get_kernel_info_handle_message(self):
+        mod = self._get_fresh_mod()
+        mod._kernel_key = "e" * 64
+        mod._kernel_ports = dict(mod._DEFAULT_PORTS)
+        proc = MagicMock()
+        proc.poll.return_value = None
+        mod.kernel_proc = proc
+
+        response = _decode(mod.handle_message(_encode({"action": "get_kernel_info"})))
+
+        assert response["status"] == "ok"
+        assert response["key"] == "e" * 64
+        assert response["ports"] == mod._DEFAULT_PORTS
+        assert response["running"] is True
 
 
 class TestDashboardLifecycle:
@@ -328,3 +422,92 @@ class TestDashboardLifecycle:
         mod._kill_proc(proc, timeout=0.01)
         proc.terminate.assert_called_once()
         proc.kill.assert_called_once()
+
+
+class TestNetworkReconfigure:
+    def _get_fresh_mod(self):
+        mod = load_agent_module()
+        mod.kernel_proc = None
+        mod.panel_proc = None
+        return mod
+
+    def test_reconfigure_network_runs_all_commands(self):
+        mod = self._get_fresh_mod()
+        ip = "172.16.0.22"
+        mac = "02:fc:00:00:00:22"
+        gateway = "172.16.0.1"
+
+        with patch("subprocess.run") as mock_run:
+            mod.reconfigure_network(ip, mac, gateway)
+
+        assert mock_run.call_args_list == [
+            call(["/sbin/ip", "link", "set", "eth0", "down"], check=True, capture_output=True, timeout=5),
+            call(["/sbin/ip", "link", "set", "eth0", "address", mac], check=True, capture_output=True, timeout=5),
+            call(["/sbin/ip", "addr", "flush", "dev", "eth0"], check=True, capture_output=True, timeout=5),
+            call(["/sbin/ip", "addr", "add", f"{ip}/24", "dev", "eth0"], check=True, capture_output=True, timeout=5),
+            call(["/sbin/ip", "link", "set", "eth0", "up"], check=True, capture_output=True, timeout=5),
+            call(["/sbin/ip", "route", "replace", "default", "via", gateway, "dev", "eth0"], check=True, capture_output=True, timeout=5),
+            call(["/usr/sbin/arping", "-c", "1", "-U", "-I", "eth0", ip], check=False, capture_output=True, timeout=5),
+        ]
+
+    def test_reconfigure_network_missing_ip_returns_error(self):
+        mod = self._get_fresh_mod()
+        response = _decode(mod.handle_message(_encode({
+            "action": "reconfigure_network",
+            "ip": "",
+            "mac": "02:fc:00:00:00:22",
+            "gateway": "172.16.0.1",
+        })))
+        assert response["status"] == "error"
+        assert response["message"] == "ip, mac, and gateway required"
+
+    def test_reconfigure_network_missing_mac_returns_error(self):
+        mod = self._get_fresh_mod()
+        response = _decode(mod.handle_message(_encode({
+            "action": "reconfigure_network",
+            "ip": "172.16.0.22",
+            "mac": "",
+            "gateway": "172.16.0.1",
+        })))
+        assert response["status"] == "error"
+        assert response["message"] == "ip, mac, and gateway required"
+
+    def test_reconfigure_network_missing_gateway_returns_error(self):
+        mod = self._get_fresh_mod()
+        response = _decode(mod.handle_message(_encode({
+            "action": "reconfigure_network",
+            "ip": "172.16.0.22",
+            "mac": "02:fc:00:00:00:22",
+            "gateway": "",
+        })))
+        assert response["status"] == "error"
+        assert response["message"] == "ip, mac, and gateway required"
+
+    def test_reconfigure_network_command_failure_returns_error(self):
+        mod = self._get_fresh_mod()
+        with patch("subprocess.run", side_effect=subprocess.CalledProcessError(returncode=1, cmd=["ip"])):
+            response = _decode(mod.handle_message(_encode({
+                "action": "reconfigure_network",
+                "ip": "172.16.0.22",
+                "mac": "02:fc:00:00:00:22",
+                "gateway": "172.16.0.1",
+            })))
+        assert response["status"] == "error"
+        assert response.get("message", "")
+
+    def test_reconfigure_network_arping_not_found_ok(self):
+        mod = self._get_fresh_mod()
+        with patch("subprocess.run", side_effect=[None, None, None, None, None, None, FileNotFoundError()] ) as mock_run:
+            mod.reconfigure_network("172.16.0.22", "02:fc:00:00:00:22", "172.16.0.1")
+        assert mock_run.call_count == 7
+
+    def test_reconfigure_network_custom_netmask(self):
+        mod = self._get_fresh_mod()
+        with patch("subprocess.run") as mock_run:
+            mod.reconfigure_network("172.16.0.22", "02:fc:00:00:00:22", "172.16.0.1", netmask="16")
+        assert mock_run.call_args_list[3] == call(
+            ["/sbin/ip", "addr", "add", "172.16.0.22/16", "dev", "eth0"],
+            check=True,
+            capture_output=True,
+            timeout=5,
+        )

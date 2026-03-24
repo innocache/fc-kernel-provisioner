@@ -1,12 +1,15 @@
 """FirecrackerProvisioner — launches Jupyter kernels inside Firecracker microVMs."""
 
 import asyncio
+import importlib
 from typing import Any, Optional
-
-from jupyter_client.provisioning import KernelProvisionerBase
 
 from .pool_client import PoolClient
 from .vsock_client import vsock_request, vsock_send_only
+
+KernelProvisionerBase = importlib.import_module(
+    "jupyter_client.provisioning"
+).KernelProvisionerBase
 
 
 class FirecrackerProcess:
@@ -47,6 +50,8 @@ class FirecrackerProvisioner(KernelProvisionerBase):
     vm_id: Optional[str] = None
     vm_ip: Optional[str] = None
     vsock_path: Optional[str] = None
+    kernel_key: Optional[str] = None
+    kernel_ports: Optional[dict[str, int]] = None
     process: Optional[FirecrackerProcess] = None
     pool_client: Optional[PoolClient] = None
 
@@ -77,6 +82,11 @@ class FirecrackerProvisioner(KernelProvisionerBase):
         self.vm_id = vm["id"]
         self.vm_ip = vm["ip"]
         self.vsock_path = vm["vsock_path"]
+        self.kernel_key = vm.get("kernel_key")
+        self.kernel_ports = vm.get("kernel_ports")
+
+        if self.kernel_key and hasattr(self, "parent") and hasattr(self.parent, "session"):
+            self.parent.session.key = self.kernel_key.encode("utf-8")
 
         if self.vm_id and getattr(self, "kernel_id", None):
             try:
@@ -99,6 +109,9 @@ class FirecrackerProvisioner(KernelProvisionerBase):
             self.connection_info["signature_scheme"] = (
                 self.parent.session.signature_scheme
             )
+        if self.kernel_ports:
+            for port_name, port_value in self.kernel_ports.items():
+                self.connection_info[port_name] = port_value
         return result
 
     def _kernel_ports(self) -> dict[str, int]:
@@ -121,6 +134,15 @@ class FirecrackerProvisioner(KernelProvisionerBase):
             raise RuntimeError("Cannot start guest kernel without a vsock path")
         if self.vm_id is None or self.pool_client is None:
             raise RuntimeError("Cannot start guest kernel before VM acquisition")
+
+        if self.kernel_key:
+            if self.vm_ip:
+                self.connection_info["ip"] = self.vm_ip
+            self.connection_info["transport"] = "tcp"
+            if self.kernel_ports:
+                self.connection_info.update(self.kernel_ports)
+            self.process = FirecrackerProcess(self.vm_id, self.pool_client)
+            return
 
         key = self._connection_key_text()
         ports = self._kernel_ports()
@@ -207,6 +229,8 @@ class FirecrackerProvisioner(KernelProvisionerBase):
             self.vm_id = None
             self.vm_ip = None
             self.vsock_path = None
+            self.kernel_key = None
+            self.kernel_ports = None
             self.process = None
 
     async def get_provisioner_info(self) -> dict[str, Any]:

@@ -29,6 +29,17 @@ panel_proc = None
 boot_time = time.monotonic()
 _APPS_DIR = "/apps"
 
+_kernel_key: str | None = None
+_kernel_ports: dict | None = None
+
+_DEFAULT_PORTS = {
+    "shell_port": 5555,
+    "iopub_port": 5556,
+    "stdin_port": 5557,
+    "control_port": 5558,
+    "hb_port": 5559,
+}
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -67,15 +78,17 @@ def write_connection_file(path: str, ports: dict, key: str, ip: str) -> None:
         json.dump(data, fh)
 
 
-def wait_for_kernel_ports(ip: str, ports: dict, timeout: float = 90.0) -> None:
+def wait_for_kernel_ports(ip: str, ports: dict, timeout: float = 90.0, proc=None) -> None:
     deadline = time.monotonic() + timeout
     pending = list(ports.values())
 
     while time.monotonic() < deadline:
+        if proc is not None and proc.poll() is not None:
+            raise RuntimeError(f"kernel process exited (code {proc.poll()}) while waiting for ports")
         remaining = []
         for port in pending:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(0.5)
+            sock.settimeout(0.2)
             try:
                 sock.connect((ip, port))
             except OSError:
@@ -85,7 +98,7 @@ def wait_for_kernel_ports(ip: str, ports: dict, timeout: float = 90.0) -> None:
         if not remaining:
             return
         pending = remaining
-        time.sleep(0.2)
+        time.sleep(0.05)
 
     raise RuntimeError(f"kernel ports did not open within {timeout}s: {pending}")
 
@@ -129,17 +142,39 @@ def start_kernel(ports: dict, key: str, ip: str) -> int:
     )
     kernel_log.close()
 
-    # Brief wait to detect immediate crashes.
-    time.sleep(0.5)
-    if kernel_proc.poll() is not None:
-        raise RuntimeError(with_log_context(f"ipykernel exited immediately with code {kernel_proc.poll()}"))
+    for _ in range(5):
+        time.sleep(0.01)
+        if kernel_proc.poll() is not None:
+            raise RuntimeError(with_log_context(f"ipykernel exited immediately with code {kernel_proc.poll()}"))
 
     try:
-        wait_for_kernel_ports(ip, ports)
+        wait_for_kernel_ports(ip, ports, proc=kernel_proc)
     except Exception as exc:
         raise RuntimeError(with_log_context(str(exc))) from exc
 
     return kernel_proc.pid
+
+
+def pre_warm_kernel() -> dict:
+    global _kernel_key, _kernel_ports, kernel_proc
+
+    import secrets
+
+    _kernel_key = secrets.token_hex(32)
+    _kernel_ports = dict(_DEFAULT_PORTS)
+
+    ip = "0.0.0.0"
+    pid = start_kernel(_kernel_ports, _kernel_key, ip)
+
+    return {"key": _kernel_key, "ports": _kernel_ports, "pid": pid}
+
+
+def get_kernel_info() -> dict:
+    return {
+        "key": _kernel_key,
+        "ports": _kernel_ports,
+        "running": kernel_proc is not None and kernel_proc.poll() is None,
+    }
 
 
 def _kill_proc(proc: subprocess.Popen, timeout: float = 5.0) -> None:
@@ -224,6 +259,31 @@ def stop_dashboard() -> None:
                 pass
 
 
+def reconfigure_network(ip: str, mac: str, gateway: str, netmask: str = "24") -> None:
+    """Reconfigure eth0 with new IP/MAC after snapshot restore."""
+    import subprocess as _sp
+
+    _ip = "/sbin/ip"
+    cmds = [
+        [_ip, "link", "set", "eth0", "down"],
+        [_ip, "link", "set", "eth0", "address", mac],
+        [_ip, "addr", "flush", "dev", "eth0"],
+        [_ip, "addr", "add", f"{ip}/{netmask}", "dev", "eth0"],
+        [_ip, "link", "set", "eth0", "up"],
+        [_ip, "route", "replace", "default", "via", gateway, "dev", "eth0"],
+    ]
+    for cmd in cmds:
+        _sp.run(cmd, check=True, capture_output=True, timeout=5)
+
+    try:
+        _sp.run(
+            ["/usr/sbin/arping", "-c", "1", "-U", "-I", "eth0", ip],
+            check=False, capture_output=True, timeout=5,
+        )
+    except FileNotFoundError:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Message protocol
 # ---------------------------------------------------------------------------
@@ -279,6 +339,17 @@ def handle_message(data: bytes) -> bytes:
         except Exception as exc:
             return _encode_response({"status": "error", "message": str(exc)})
 
+    elif action == "pre_warm_kernel":
+        try:
+            info = pre_warm_kernel()
+            return _encode_response({"status": "ok", **info})
+        except Exception as e:
+            return _encode_response({"status": "error", "message": str(e)})
+
+    elif action == "get_kernel_info":
+        info = get_kernel_info()
+        return _encode_response({"status": "ok", **info})
+
     elif action == "launch_dashboard":
         code = msg.get("code", "")
         port = msg.get("port", 5006)
@@ -297,6 +368,19 @@ def handle_message(data: bytes) -> bytes:
             return _encode_response({"status": "ok"})
         except Exception as exc:
             return _encode_response({"status": "error", "message": str(exc)})
+
+    elif action == "reconfigure_network":
+        ip = msg.get("ip", "")
+        mac = msg.get("mac", "")
+        gateway = msg.get("gateway", "")
+        netmask = msg.get("netmask", "24")
+        if not ip or not mac or not gateway:
+            return _encode_response({"status": "error", "message": "ip, mac, and gateway required"})
+        try:
+            reconfigure_network(ip, mac, gateway, netmask)
+            return _encode_response({"status": "ok"})
+        except Exception as e:
+            return _encode_response({"status": "error", "message": str(e)})
 
     elif action == "ping":
         uptime = time.monotonic() - boot_time
