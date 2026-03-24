@@ -3,8 +3,6 @@
 import asyncio
 from typing import Any, Optional
 
-import fc_provisioner.kernel_ready_patch  # noqa: F401
-
 from jupyter_client.provisioning import KernelProvisionerBase
 
 from .pool_client import PoolClient
