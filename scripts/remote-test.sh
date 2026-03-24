@@ -264,10 +264,15 @@ while [[ $ELAPSED -lt $TIMEOUT ]]; do
         if ssh "$HOST" "curl -sf http://localhost:8080/health" &>/dev/null; then
             CADDY_READY=true
             info "Caddy is ready ✓"
+        elif ssh "$HOST" "which caddy" &>/dev/null 2>&1; then
+            :  # caddy installed but not ready yet — keep waiting
+        else
+            CADDY_READY=skip
+            info "Caddy not installed — skipping ✓"
         fi
     fi
 
-    if [[ "$POOL_READY" == "true" && "$GW_READY" == "true" && "$API_READY" == "true" && "$CADDY_READY" == "true" ]]; then
+    if [[ "$POOL_READY" == "true" && "$GW_READY" == "true" && "$API_READY" == "true" && ("$CADDY_READY" == "true" || "$CADDY_READY" == "skip") ]]; then
         break
     fi
 
@@ -275,12 +280,12 @@ while [[ $ELAPSED -lt $TIMEOUT ]]; do
     ELAPSED=$((ELAPSED + 2))
 done
 
-if [[ "$POOL_READY" != "true" || "$GW_READY" != "true" || "$API_READY" != "true" || "$CADDY_READY" != "true" ]]; then
+if [[ "$POOL_READY" != "true" || "$GW_READY" != "true" || "$API_READY" != "true" ]] || [[ "$CADDY_READY" != "true" && "$CADDY_READY" != "skip" ]]; then
     fail "Services did not become ready within ${TIMEOUT}s"
     [[ "$POOL_READY" != "true" ]] && fail "Pool manager not ready — check /tmp/fc-pool-manager.log on remote host"
     [[ "$GW_READY" != "true" ]] && fail "Kernel Gateway not ready — check /tmp/fc-kernel-gateway.log on remote host"
     [[ "$API_READY" != "true" ]] && fail "Execution API not ready — check /tmp/fc-execution-api.log on remote host"
-    [[ "$CADDY_READY" != "true" ]] && fail "Caddy not ready — check /tmp/fc-caddy.log on remote host"
+    [[ "$CADDY_READY" != "true" && "$CADDY_READY" != "skip" ]] && fail "Caddy not ready — check /tmp/fc-caddy.log on remote host"
     TEST_RC=1
     exit 1  # Triggers trap → teardown → exit $TEST_RC
 fi
