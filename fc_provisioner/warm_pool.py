@@ -72,21 +72,11 @@ class WarmPoolProvisioner(FirecrackerProvisioner):
             cls._replenish_task = asyncio.ensure_future(cls._replenish_loop())
 
     async def _get_valid_vm(self) -> dict | None:
-        deadline = asyncio.get_event_loop().time() + 30
-        while asyncio.get_event_loop().time() < deadline:
-            try:
-                vm = await asyncio.wait_for(self._warm_pool.get(), timeout=5)
-            except asyncio.TimeoutError:
-                return None
-            try:
-                health = await self._pool_client.is_alive(vm["id"])
-                if health.get("alive"):
-                    return vm
-                logger.warning("Warm pool: VM %s is stale, discarding", vm["id"])
-                await self._pool_client.release(vm["id"], destroy=True)
-            except Exception:
-                logger.warning("Warm pool: VM %s health check failed, discarding", vm["id"])
-        return None
+        try:
+            vm = await asyncio.wait_for(self._warm_pool.get(), timeout=30)
+        except asyncio.TimeoutError:
+            return None
+        return vm
 
     async def pre_launch(self, **kwargs) -> dict[str, Any]:
         self._apply_config()
