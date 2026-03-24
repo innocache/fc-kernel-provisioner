@@ -75,7 +75,7 @@ def wait_for_kernel_ports(ip: str, ports: dict, timeout: float = 90.0) -> None:
         remaining = []
         for port in pending:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(0.5)
+            sock.settimeout(0.2)
             try:
                 sock.connect((ip, port))
             except OSError:
@@ -85,7 +85,7 @@ def wait_for_kernel_ports(ip: str, ports: dict, timeout: float = 90.0) -> None:
         if not remaining:
             return
         pending = remaining
-        time.sleep(0.2)
+        time.sleep(0.05)
 
     raise RuntimeError(f"kernel ports did not open within {timeout}s: {pending}")
 
@@ -129,10 +129,10 @@ def start_kernel(ports: dict, key: str, ip: str) -> int:
     )
     kernel_log.close()
 
-    # Brief wait to detect immediate crashes.
-    time.sleep(0.5)
-    if kernel_proc.poll() is not None:
-        raise RuntimeError(with_log_context(f"ipykernel exited immediately with code {kernel_proc.poll()}"))
+    for _ in range(5):
+        time.sleep(0.01)
+        if kernel_proc.poll() is not None:
+            raise RuntimeError(with_log_context(f"ipykernel exited immediately with code {kernel_proc.poll()}"))
 
     try:
         wait_for_kernel_ports(ip, ports)
