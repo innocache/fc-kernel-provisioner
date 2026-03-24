@@ -457,3 +457,124 @@ class TestDashboardIntegration:
             await http.delete(f"{EXECUTION_API_URL}/sessions/{sid}")
             dead = await http.get(f"http://localhost:8080{url}")
             assert dead.status in (404, 502)
+
+
+class TestExecutionAPIExtended:
+    async def test_one_shot_error_returns_200(self):
+        async with aiohttp.ClientSession() as http:
+            resp = await http.post(
+                f"{EXECUTION_API_URL}/execute",
+                json={"code": "1/0"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["success"] is False
+            assert data["error"]["name"] == "ZeroDivisionError"
+
+    async def test_one_shot_rich_output(self):
+        async with aiohttp.ClientSession() as http:
+            resp = await http.post(
+                f"{EXECUTION_API_URL}/execute",
+                json={
+                    "code": (
+                        "import matplotlib.pyplot as plt\n"
+                        "plt.plot([1, 2, 3])\n"
+                        "plt.show()"
+                    ),
+                },
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["success"] is True
+            png = [o for o in data["outputs"] if o["mime_type"] == "image/png"]
+            assert len(png) >= 1
+            assert len(png[0]["data_b64"]) > 100
+
+    async def test_session_create_with_custom_timeout(self):
+        async with aiohttp.ClientSession() as http:
+            resp = await http.post(
+                f"{EXECUTION_API_URL}/sessions",
+                json={"execution_timeout": 10},
+            )
+            assert resp.status == 200
+            sid = (await resp.json())["session_id"]
+            await http.delete(f"{EXECUTION_API_URL}/sessions/{sid}")
+
+    async def test_explicit_dashboard_stop(self):
+        async with aiohttp.ClientSession() as http:
+            resp = await http.post(f"{EXECUTION_API_URL}/sessions")
+            sid = (await resp.json())["session_id"]
+            try:
+                await http.post(
+                    f"{EXECUTION_API_URL}/sessions/{sid}/dashboard",
+                    json={"code": "import panel as pn\npn.panel('stop me').servable()"},
+                )
+                resp = await http.delete(f"{EXECUTION_API_URL}/sessions/{sid}/dashboard")
+                assert resp.status == 200
+                assert (await resp.json())["ok"] is True
+            finally:
+                await http.delete(f"{EXECUTION_API_URL}/sessions/{sid}")
+
+    async def test_large_output(self):
+        async with aiohttp.ClientSession() as http:
+            resp = await http.post(
+                f"{EXECUTION_API_URL}/execute",
+                json={"code": "print('x' * 100000)"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["success"] is True
+            assert len(data["stdout"]) >= 100000
+
+    async def test_concurrent_sessions(self):
+        async with aiohttp.ClientSession() as http:
+            sids = []
+            for _ in range(3):
+                resp = await http.post(f"{EXECUTION_API_URL}/sessions")
+                assert resp.status == 200
+                sids.append((await resp.json())["session_id"])
+
+            async def execute_on(sid, value):
+                await http.post(
+                    f"{EXECUTION_API_URL}/sessions/{sid}/execute",
+                    json={"code": f"x = {value}"},
+                )
+                resp = await http.post(
+                    f"{EXECUTION_API_URL}/sessions/{sid}/execute",
+                    json={"code": "print(x)"},
+                )
+                return (await resp.json())["stdout"].strip()
+
+            results = await asyncio.gather(
+                execute_on(sids[0], 10),
+                execute_on(sids[1], 20),
+                execute_on(sids[2], 30),
+            )
+            assert results == ["10", "20", "30"]
+
+            for sid in sids:
+                await http.delete(f"{EXECUTION_API_URL}/sessions/{sid}")
+
+
+class TestPoolStatusIntegration:
+    async def test_pool_status_endpoint(self):
+        conn = aiohttp.UnixConnector(path=POOL_SOCKET)
+        async with aiohttp.ClientSession(connector=conn) as http:
+            resp = await http.get("http://localhost/api/pool/status")
+            assert resp.status == 200
+            data = await resp.json()
+            assert "idle" in data
+            assert "assigned" in data
+            assert "max" in data
+            assert data["max"] > 0
+
+    async def test_session_create_latency(self):
+        import time
+        async with aiohttp.ClientSession() as http:
+            t0 = time.monotonic()
+            resp = await http.post(f"{EXECUTION_API_URL}/sessions")
+            elapsed = (time.monotonic() - t0) * 1000
+            assert resp.status == 200
+            sid = (await resp.json())["session_id"]
+            await http.delete(f"{EXECUTION_API_URL}/sessions/{sid}")
+            assert elapsed < 500, f"Session create took {elapsed:.0f}ms, expected <500ms"
