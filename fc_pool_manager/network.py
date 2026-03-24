@@ -87,6 +87,17 @@ class NetworkManager:
         except subprocess.CalledProcessError as exc:
             logger.warning("Failed to delete TAP %s: %s", tap_name, exc)
 
+    async def detach_from_bridge(self, tap_name: str) -> None:
+        """Detach TAP from bridge. VM can't send/receive network traffic."""
+        try:
+            await self._run("ip", "link", "set", tap_name, "nomaster")
+        except subprocess.CalledProcessError as exc:
+            logger.warning("Failed to detach TAP %s from bridge: %s", tap_name, exc)
+
+    async def attach_to_bridge(self, tap_name: str) -> None:
+        """Reattach TAP to bridge. Restores network connectivity."""
+        await self._run("ip", "link", "set", tap_name, "master", self.bridge)
+
     async def apply_vm_rules(
         self, tap_name: str, vm_ip: str, rate_limit_mbit: int, allowed_host_ports: tuple[int, ...],
     ) -> None:
@@ -165,4 +176,4 @@ class NetworkManager:
         )
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
-            raise subprocess.CalledProcessError(proc.returncode, cmd, stderr=stderr)
+            raise subprocess.CalledProcessError(proc.returncode or 1, cmd, stderr=stderr)

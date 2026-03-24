@@ -310,6 +310,9 @@ class PoolManager:
                 "ip", "link", "set", vm.tap_name, "name", golden_tap,
             )
 
+        current_tap = golden_tap if golden_tap and golden_tap != vm.tap_name else vm.tap_name
+        await self._network.detach_from_bridge(current_tap)
+
         api_socket = await self._start_jailer(vm)
         api = FirecrackerAPI(api_socket)
         await api.load_snapshot(
@@ -322,6 +325,21 @@ class PoolManager:
             await self._network._run(
                 "ip", "link", "set", golden_tap, "name", vm.tap_name,
             )
+
+        from .vsock import vsock_request
+        try:
+            await vsock_request(
+                vm.vsock_path,
+                {
+                    "action": "reconfigure_network",
+                    "ip": vm.ip,
+                    "mac": vm.mac,
+                    "gateway": self._config.gateway,
+                },
+                timeout=10,
+            )
+        finally:
+            await self._network.attach_to_bridge(vm.tap_name)
 
     async def _wait_for_guest_agent(self, vm: VMInstance) -> None:
         from .vsock import vsock_request

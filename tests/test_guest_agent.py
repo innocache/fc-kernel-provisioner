@@ -328,3 +328,92 @@ class TestDashboardLifecycle:
         mod._kill_proc(proc, timeout=0.01)
         proc.terminate.assert_called_once()
         proc.kill.assert_called_once()
+
+
+class TestNetworkReconfigure:
+    def _get_fresh_mod(self):
+        mod = load_agent_module()
+        mod.kernel_proc = None
+        mod.panel_proc = None
+        return mod
+
+    def test_reconfigure_network_runs_all_commands(self):
+        mod = self._get_fresh_mod()
+        ip = "172.16.0.22"
+        mac = "02:fc:00:00:00:22"
+        gateway = "172.16.0.1"
+
+        with patch("subprocess.run") as mock_run:
+            mod.reconfigure_network(ip, mac, gateway)
+
+        assert mock_run.call_args_list == [
+            call(["ip", "link", "set", "eth0", "down"], check=True, capture_output=True, timeout=5),
+            call(["ip", "link", "set", "eth0", "address", mac], check=True, capture_output=True, timeout=5),
+            call(["ip", "addr", "flush", "dev", "eth0"], check=True, capture_output=True, timeout=5),
+            call(["ip", "addr", "add", f"{ip}/24", "dev", "eth0"], check=True, capture_output=True, timeout=5),
+            call(["ip", "link", "set", "eth0", "up"], check=True, capture_output=True, timeout=5),
+            call(["ip", "route", "replace", "default", "via", gateway, "dev", "eth0"], check=True, capture_output=True, timeout=5),
+            call(["arping", "-c", "1", "-U", "-I", "eth0", ip], check=False, capture_output=True, timeout=5),
+        ]
+
+    def test_reconfigure_network_missing_ip_returns_error(self):
+        mod = self._get_fresh_mod()
+        response = _decode(mod.handle_message(_encode({
+            "action": "reconfigure_network",
+            "ip": "",
+            "mac": "02:fc:00:00:00:22",
+            "gateway": "172.16.0.1",
+        })))
+        assert response["status"] == "error"
+        assert response["message"] == "ip, mac, and gateway required"
+
+    def test_reconfigure_network_missing_mac_returns_error(self):
+        mod = self._get_fresh_mod()
+        response = _decode(mod.handle_message(_encode({
+            "action": "reconfigure_network",
+            "ip": "172.16.0.22",
+            "mac": "",
+            "gateway": "172.16.0.1",
+        })))
+        assert response["status"] == "error"
+        assert response["message"] == "ip, mac, and gateway required"
+
+    def test_reconfigure_network_missing_gateway_returns_error(self):
+        mod = self._get_fresh_mod()
+        response = _decode(mod.handle_message(_encode({
+            "action": "reconfigure_network",
+            "ip": "172.16.0.22",
+            "mac": "02:fc:00:00:00:22",
+            "gateway": "",
+        })))
+        assert response["status"] == "error"
+        assert response["message"] == "ip, mac, and gateway required"
+
+    def test_reconfigure_network_command_failure_returns_error(self):
+        mod = self._get_fresh_mod()
+        with patch("subprocess.run", side_effect=subprocess.CalledProcessError(returncode=1, cmd=["ip"])):
+            response = _decode(mod.handle_message(_encode({
+                "action": "reconfigure_network",
+                "ip": "172.16.0.22",
+                "mac": "02:fc:00:00:00:22",
+                "gateway": "172.16.0.1",
+            })))
+        assert response["status"] == "error"
+        assert response.get("message", "")
+
+    def test_reconfigure_network_arping_not_found_ok(self):
+        mod = self._get_fresh_mod()
+        with patch("subprocess.run", side_effect=[None, None, None, None, None, None, FileNotFoundError()] ) as mock_run:
+            mod.reconfigure_network("172.16.0.22", "02:fc:00:00:00:22", "172.16.0.1")
+        assert mock_run.call_count == 7
+
+    def test_reconfigure_network_custom_netmask(self):
+        mod = self._get_fresh_mod()
+        with patch("subprocess.run") as mock_run:
+            mod.reconfigure_network("172.16.0.22", "02:fc:00:00:00:22", "172.16.0.1", netmask="16")
+        assert mock_run.call_args_list[3] == call(
+            ["ip", "addr", "add", "172.16.0.22/16", "dev", "eth0"],
+            check=True,
+            capture_output=True,
+            timeout=5,
+        )
