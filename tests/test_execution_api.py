@@ -132,6 +132,23 @@ class TestModels:
         resp = ErrorResponse(error="session not found")
         assert resp.error == "session not found"
 
+    def test_dashboard_request(self):
+        from execution_api.models import DashboardRequest
+        req = DashboardRequest(code="import panel as pn")
+        assert req.code == "import panel as pn"
+
+    def test_dashboard_response(self):
+        from execution_api.models import DashboardResponse
+        resp = DashboardResponse(
+            url="/dash/sess123/dash_abcd",
+            session_id="sess123",
+            app_id="abcd",
+        )
+        data = resp.model_dump(mode="json")
+        assert data["url"] == "/dash/sess123/dash_abcd"
+        assert data["session_id"] == "sess123"
+        assert data["app_id"] == "abcd"
+
 
 from execution_api.server import SessionManager, SessionEntry
 
@@ -350,6 +367,32 @@ class TestSessionManagerEdgeCases:
         assert mgr.is_full is False
 
 
+class TestSessionManagerDashboardState:
+    @patch("execution_api.server.SandboxSession")
+    @patch("execution_api.server._lookup_vm_by_kernel")
+    async def test_create_populates_vm_info(self, mock_lookup, MockSession):
+        session = AsyncMock()
+        session._kernel_id = "kid-1"
+        MockSession.return_value = session
+        mock_lookup.return_value = {"ip": "172.16.0.2", "vsock_path": "/tmp/v.sock"}
+        mgr = SessionManager(gateway_url="http://gw:8888")
+        entry = await mgr.create()
+        assert entry.vm_ip == "172.16.0.2"
+        assert entry.vsock_path == "/tmp/v.sock"
+        assert entry.active_dashboard is None
+
+    @patch("execution_api.server.SandboxSession")
+    @patch("execution_api.server._lookup_vm_by_kernel", side_effect=RuntimeError("down"))
+    async def test_create_vm_lookup_failure_keeps_session_usable(self, _, MockSession):
+        session = AsyncMock()
+        session._kernel_id = "kid-1"
+        MockSession.return_value = session
+        mgr = SessionManager(gateway_url="http://gw:8888")
+        entry = await mgr.create()
+        assert entry.vm_ip is None
+        assert entry.vsock_path is None
+
+
 from execution_api.server import _result_to_response, create_app
 from sandbox_client import DisplayOutput, ExecutionError, ExecutionResult
 
@@ -442,6 +485,7 @@ def mock_sandbox_session():
     session = AsyncMock()
     session.start = AsyncMock()
     session.stop = AsyncMock()
+    session._kernel_id = "test-kernel-id"
     session.execute = AsyncMock(return_value=ExecutionResult(
         success=True, stdout="hello\n", stderr="", error=None,
         outputs=[], execution_count=1,
@@ -451,8 +495,14 @@ def mock_sandbox_session():
 
 @pytest.fixture
 async def client(mock_sandbox_session):
-    with patch("execution_api.server.SandboxSession") as MockSession:
+    with patch("execution_api.server.SandboxSession") as MockSession, \
+         patch("execution_api.server._lookup_vm_by_kernel", new_callable=AsyncMock) as mock_lookup, \
+         patch("execution_api.server._vsock_request", new_callable=AsyncMock) as mock_vsock, \
+         patch("execution_api.server.caddy.add_route", new_callable=AsyncMock), \
+         patch("execution_api.server.caddy.remove_route", new_callable=AsyncMock):
         MockSession.return_value = mock_sandbox_session
+        mock_lookup.return_value = {"ip": "172.16.0.2", "vsock_path": "/tmp/v.sock"}
+        mock_vsock.return_value = {"status": "ok"}
         mgr = SessionManager(
             gateway_url="http://test:8888", default_timeout=30,
             max_sessions=20, session_ttl=600,
@@ -672,3 +722,92 @@ class TestEndpoints:
         with pytest.raises(RuntimeError, match="max sessions reached"):
             await mgr.create()
         assert len(mgr.sessions) == 2
+
+
+class TestDashboardEndpoints:
+    async def test_launch_dashboard_success(self, client):
+        c, _ = client
+        sid = (await c.post("/sessions")).json()["session_id"]
+        resp = await c.post(f"/sessions/{sid}/dashboard", json={"code": "import panel as pn"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["session_id"] == sid
+        assert data["url"].startswith(f"/dash/{sid}/")
+
+    async def test_launch_dashboard_session_not_found(self, client):
+        c, _ = client
+        resp = await c.post("/sessions/missing/dashboard", json={"code": "x"})
+        assert resp.status_code == 404
+
+    async def test_launch_dashboard_no_vm_info(self, client):
+        c, _ = client
+        sid = (await c.post("/sessions")).json()["session_id"]
+        app_mgr = c._transport.app.state.session_manager
+        app_mgr.sessions[sid].vsock_path = None
+        resp = await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
+        assert resp.status_code == 503
+
+    async def test_launch_dashboard_vsock_error(self, client):
+        c, _ = client
+        sid = (await c.post("/sessions")).json()["session_id"]
+        with patch("execution_api.server._vsock_request", side_effect=RuntimeError("down")):
+            resp = await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
+        assert resp.status_code == 503
+
+    async def test_launch_dashboard_panel_start_error(self, client):
+        c, _ = client
+        sid = (await c.post("/sessions")).json()["session_id"]
+        with patch("execution_api.server._vsock_request", return_value={"status": "error", "message": "bad code"}):
+            resp = await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
+        assert resp.status_code == 500
+
+    async def test_launch_dashboard_caddy_error_triggers_cleanup(self, client):
+        c, _ = client
+        sid = (await c.post("/sessions")).json()["session_id"]
+        with patch("execution_api.server._vsock_request", side_effect=[{"status": "ok"}, {"status": "ok"}]) as vsock, \
+             patch("execution_api.server.caddy.add_route", side_effect=RuntimeError("caddy down")):
+            resp = await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
+        assert resp.status_code == 503
+        assert vsock.await_count == 2
+
+    async def test_launch_dashboard_replaces_existing(self, client):
+        c, _ = client
+        sid = (await c.post("/sessions")).json()["session_id"]
+        await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
+        resp = await c.post(f"/sessions/{sid}/dashboard", json={"code": "y"})
+        assert resp.status_code == 200
+
+    async def test_stop_dashboard_success(self, client):
+        c, _ = client
+        sid = (await c.post("/sessions")).json()["session_id"]
+        await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
+        resp = await c.delete(f"/sessions/{sid}/dashboard")
+        assert resp.status_code == 200
+
+    async def test_stop_dashboard_session_not_found(self, client):
+        c, _ = client
+        resp = await c.delete("/sessions/missing/dashboard")
+        assert resp.status_code == 404
+
+    async def test_stop_dashboard_no_active_dashboard_is_noop(self, client):
+        c, _ = client
+        sid = (await c.post("/sessions")).json()["session_id"]
+        resp = await c.delete(f"/sessions/{sid}/dashboard")
+        assert resp.status_code == 200
+
+    async def test_delete_session_stops_dashboard_and_removes_route(self, client):
+        c, _ = client
+        sid = (await c.post("/sessions")).json()["session_id"]
+        await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
+        with patch("execution_api.server._vsock_request", return_value={"status": "ok"}) as vsock, \
+             patch("execution_api.server.caddy.remove_route", new_callable=AsyncMock) as rm:
+            resp = await c.delete(f"/sessions/{sid}")
+        assert resp.status_code == 200
+        assert vsock.await_count >= 1
+        rm.assert_awaited_once_with(sid)
+
+    async def test_delete_session_without_dashboard_is_unchanged(self, client):
+        c, _ = client
+        sid = (await c.post("/sessions")).json()["session_id"]
+        resp = await c.delete(f"/sessions/{sid}")
+        assert resp.status_code == 200

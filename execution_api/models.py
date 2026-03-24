@@ -57,3 +57,13 @@ class DeleteResponse(BaseModel):
 
 class ErrorResponse(BaseModel):
     error: str
+
+
+class DashboardRequest(BaseModel):
+    code: str
+
+
+class DashboardResponse(BaseModel):
+    url: str
+    session_id: str
+    app_id: str

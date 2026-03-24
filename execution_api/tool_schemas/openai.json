@@ -15,5 +15,27 @@
         "required": ["code"]
       }
     }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "launch_dashboard",
+      "description": "Launch an interactive Panel dashboard inside the sandbox VM and return a browser URL. Use after execute_python_code has computed data — the dashboard reads the same files that the kernel wrote. The dashboard persists until the session ends or a new dashboard replaces it.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Panel dashboard Python code executed inside the VM."
+          },
+          "framework": {
+            "type": "string",
+            "enum": ["panel"],
+            "description": "Visualization framework. Only panel is supported."
+          }
+        },
+        "required": ["code"]
+      }
+    }
   }
 ]

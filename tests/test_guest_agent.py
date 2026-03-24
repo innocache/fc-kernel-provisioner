@@ -2,9 +2,11 @@
 import importlib.util
 import json
 import os
+import subprocess
 import struct
 import sys
 import time
+from typing import Any
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -12,8 +14,10 @@ import pytest
 AGENT_PATH = os.path.join(os.path.dirname(__file__), "..", "guest", "fc_guest_agent.py")
 
 
-def load_agent_module():
+def load_agent_module() -> Any:
     spec = importlib.util.spec_from_file_location("fc_guest_agent", AGENT_PATH)
+    assert spec is not None
+    assert spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -227,3 +231,100 @@ class TestHandleMessage:
         response = _decode(mod.handle_message(_encode(msg)))
 
         assert response["status"] == "error"
+
+
+class TestDashboardLifecycle:
+    def _get_fresh_mod(self):
+        mod = load_agent_module()
+        mod.kernel_proc = None
+        mod.panel_proc = None
+        return mod
+
+    def test_launch_dashboard_writes_file_and_starts_panel(self, tmp_path):
+        mod = self._get_fresh_mod()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        with patch.object(mod, "_APPS_DIR", str(tmp_path)), \
+             patch("subprocess.Popen", return_value=mock_proc), \
+             patch.object(mod, "wait_for_kernel_ports"):
+            mod.start_dashboard("print('x')", 5006, "app1", "sess1")
+        assert (tmp_path / "dash_app1.py").exists()
+
+    def test_launch_dashboard_kills_existing_panel_first(self, tmp_path):
+        mod = self._get_fresh_mod()
+        existing = MagicMock()
+        existing.poll.return_value = None
+        mod.panel_proc = existing
+        new_proc = MagicMock()
+        new_proc.poll.return_value = None
+        with patch.object(mod, "_APPS_DIR", str(tmp_path)), \
+             patch.object(mod, "_kill_proc") as kill_proc, \
+             patch("subprocess.Popen", return_value=new_proc), \
+             patch.object(mod, "wait_for_kernel_ports"):
+            mod.start_dashboard("print('x')", 5006, "app1", "sess1")
+        kill_proc.assert_called_once_with(existing)
+
+    def test_launch_dashboard_port_timeout_returns_error(self):
+        mod = self._get_fresh_mod()
+        msg = {
+            "action": "launch_dashboard",
+            "code": "import panel as pn",
+            "port": 5006,
+            "app_id": "app1",
+            "session_id": "sess1",
+        }
+        with patch.object(mod, "start_dashboard", side_effect=RuntimeError("panel serve did not start: timeout")):
+            response = _decode(mod.handle_message(_encode(msg)))
+        assert response["status"] == "error"
+
+    def test_launch_dashboard_process_exits_early_returns_error(self):
+        mod = self._get_fresh_mod()
+        msg = {
+            "action": "launch_dashboard",
+            "code": "import panel as pn",
+            "port": 5006,
+            "app_id": "app1",
+            "session_id": "sess1",
+        }
+        with patch.object(mod, "start_dashboard", side_effect=RuntimeError("panel exited immediately")):
+            response = _decode(mod.handle_message(_encode(msg)))
+        assert response["status"] == "error"
+
+    def test_launch_dashboard_missing_code_returns_error(self):
+        mod = self._get_fresh_mod()
+        response = _decode(mod.handle_message(_encode({"action": "launch_dashboard", "session_id": "s1"})))
+        assert response["status"] == "error"
+
+    def test_stop_dashboard_kills_process(self):
+        mod = self._get_fresh_mod()
+        proc = MagicMock()
+        proc.poll.return_value = None
+        mod.panel_proc = proc
+        with patch.object(mod, "_kill_proc") as kill_proc:
+            mod.stop_dashboard()
+        kill_proc.assert_called_once_with(proc)
+        assert mod.panel_proc is None
+
+    def test_stop_dashboard_idempotent_when_no_panel(self):
+        mod = self._get_fresh_mod()
+        mod.panel_proc = None
+        mod.stop_dashboard()
+        assert mod.panel_proc is None
+
+    def test_stop_dashboard_cleans_app_files(self, tmp_path):
+        mod = self._get_fresh_mod()
+        (tmp_path / "dash_a.py").write_text("x")
+        (tmp_path / "dash_b.py").write_text("x")
+        with patch.object(mod, "_APPS_DIR", str(tmp_path)):
+            mod.stop_dashboard()
+        assert not (tmp_path / "dash_a.py").exists()
+        assert not (tmp_path / "dash_b.py").exists()
+
+    def test_kill_proc_sigterm_then_sigkill(self):
+        mod = self._get_fresh_mod()
+        proc = MagicMock()
+        proc.poll.return_value = None
+        proc.wait.side_effect = [subprocess.TimeoutExpired(cmd="x", timeout=1), None]
+        mod._kill_proc(proc, timeout=0.01)
+        proc.terminate.assert_called_once()
+        proc.kill.assert_called_once()

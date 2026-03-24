@@ -24,6 +24,8 @@ def create_app(manager: PoolManager) -> web.Application:
     app.router.add_delete("/api/vms/{vm_id}", handle_release)
     app.router.add_get("/api/vms/{vm_id}/health", handle_health)
     app.router.add_get("/api/pool/status", handle_pool_status)
+    app.router.add_post("/api/vms/{vm_id}/bind-kernel", handle_bind_kernel)
+    app.router.add_get("/api/vms/by-kernel/{kernel_id}", handle_vm_by_kernel)
     app.router.add_get("/api/metrics", make_aiohttp_handler())
 
     return app
@@ -79,6 +81,31 @@ async def handle_health(request: web.Request) -> web.Response:
 async def handle_pool_status(request: web.Request) -> web.Response:
     manager: PoolManager = request.app["manager"]
     return web.json_response(manager.pool_status())
+
+
+async def handle_bind_kernel(request: web.Request) -> web.Response:
+    manager: PoolManager = request.app["manager"]
+    vm_id = request.match_info["vm_id"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON body"}, status=400)
+    kernel_id = body.get("kernel_id")
+    if not kernel_id:
+        return web.json_response({"error": "kernel_id required"}, status=400)
+    if vm_id not in manager._vms:
+        return web.json_response({"error": "VM not found"}, status=404)
+    manager.bind_kernel(vm_id, kernel_id)
+    return web.json_response({"ok": True})
+
+
+async def handle_vm_by_kernel(request: web.Request) -> web.Response:
+    manager: PoolManager = request.app["manager"]
+    kernel_id = request.match_info["kernel_id"]
+    data = manager.vm_by_kernel(kernel_id)
+    if data is None:
+        return web.json_response({"error": "VM not found for kernel"}, status=404)
+    return web.json_response(data)
 
 
 async def run_server(config_path: str, socket_path: str) -> None:
