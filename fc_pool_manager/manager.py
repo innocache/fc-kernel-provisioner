@@ -51,6 +51,7 @@ class PoolManager:
             firecracker_path=config.firecracker_path,
         )
         self._snapshot_checked = False
+        self._snapshot_valid = False
         POOL_MAX_VMS.set(config.max_vms)
 
     def _update_vm_gauges(self) -> None:
@@ -228,7 +229,7 @@ class PoolManager:
                 self._config.allowed_host_ports,
             )
 
-            if use_snapshot and self._snapshot.has_valid_snapshot():
+            if use_snapshot and self._snapshot_valid:
                 await self._restore_from_snapshot(vm)
             else:
                 await self._full_boot(vm)
@@ -330,7 +331,7 @@ class PoolManager:
     async def create_golden_snapshot(self) -> None:
         vm: VMInstance | None = None
         try:
-            vm = await self._boot_vm(use_snapshot=False)
+            vm = await self._boot_ephemeral_vm()
             api_socket = os.path.join(vm.jail_path, "run", "firecracker.socket")
             api = FirecrackerAPI(api_socket)
             await api.pause()
@@ -348,20 +349,56 @@ class PoolManager:
                 self._snapshot.memory_path,
             )
             self._snapshot.save_metadata()
+            self._snapshot_valid = True
             logger.info("Created golden snapshot in %s", self._config.snapshot_dir)
         except Exception:
             self._snapshot.invalidate()
+            self._snapshot_valid = False
             raise
         finally:
             if vm is not None:
-                self._vms.pop(vm.vm_id, None)
                 await self._destroy_vm(vm)
+
+    async def _boot_ephemeral_vm(self) -> VMInstance:
+        short_id = secrets.token_hex(8)
+        vm_id = f"vm-snap-{short_id}"
+        ip = self._network.allocate_ip()
+        cid = self._cid_alloc.allocate()
+        tap_name = self._network._tap_name(short_id)
+        mac = self._network._mac_from_ip(ip)
+
+        jail_path = os.path.join(
+            self._config.chroot_base, "firecracker", vm_id, "root"
+        )
+        vsock_path = os.path.join(jail_path, "v.sock")
+
+        vm = VMInstance(
+            vm_id=vm_id, short_id=short_id, ip=ip, cid=cid,
+            tap_name=tap_name, mac=mac,
+            jail_path=jail_path, vsock_path=vsock_path,
+        )
+
+        try:
+            await self._prepare_jail_root(vm)
+            await self._network.create_tap(short_id)
+            await self._network.apply_vm_rules(
+                tap_name, ip,
+                self._config.rate_limit_mbit,
+                self._config.allowed_host_ports,
+            )
+            await self._full_boot(vm)
+            await self._wait_for_guest_agent(vm)
+            return vm
+        except Exception:
+            await self._destroy_vm(vm)
+            raise
 
     async def ensure_golden_snapshot(self) -> None:
         if self._snapshot_checked:
             return
         self._snapshot_checked = True
         if self._snapshot.has_valid_snapshot():
+            self._snapshot_valid = True
             return
         if not (
             os.path.isfile(self._config.vm_kernel)
