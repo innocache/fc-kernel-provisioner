@@ -23,6 +23,8 @@ class PoolConfig:
     subnet: str
     gateway: str
     vm_ip_start: int
+    rate_limit_mbit: int
+    allowed_host_ports: tuple[int, ...]
 
     jailer_enabled: bool
     chroot_base: str
@@ -54,6 +56,8 @@ class PoolConfig:
             subnet=net["subnet"],
             gateway=net["gateway"],
             vm_ip_start=net["vm_ip_start"],
+            rate_limit_mbit=net.get("rate_limit_mbit", 10),
+            allowed_host_ports=tuple(net.get("allowed_host_ports", [53])),
             jailer_enabled=jail["enabled"],
             chroot_base=jail["chroot_base"],
             firecracker_path=jail["exec_path"],

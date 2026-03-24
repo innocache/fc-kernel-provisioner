@@ -82,11 +82,64 @@ class NetworkManager:
         return tap
 
     async def delete_tap(self, tap_name: str) -> None:
-        """Delete a TAP device (auto-detaches from bridge)."""
         try:
             await self._run("ip", "link", "del", tap_name)
         except subprocess.CalledProcessError as exc:
             logger.warning("Failed to delete TAP %s: %s", tap_name, exc)
+
+    async def apply_vm_rules(
+        self, tap_name: str, vm_ip: str, rate_limit_mbit: int, allowed_host_ports: tuple[int, ...],
+    ) -> None:
+        if rate_limit_mbit > 0:
+            await self._run(
+                "tc", "qdisc", "add", "dev", tap_name, "root",
+                "tbf", "rate", f"{rate_limit_mbit}mbit",
+                "burst", "32kbit", "latency", "400ms",
+            )
+
+        for port in allowed_host_ports:
+            for proto in ("tcp", "udp"):
+                await self._run(
+                    "iptables", "-I", "INPUT",
+                    "-i", self.bridge, "-s", vm_ip,
+                    "-p", proto, "--dport", str(port),
+                    "-j", "ACCEPT",
+                )
+        await self._run(
+            "iptables", "-A", "INPUT",
+            "-i", self.bridge, "-s", vm_ip,
+            "-j", "DROP",
+        )
+
+    async def remove_vm_rules(
+        self, tap_name: str, vm_ip: str, rate_limit_mbit: int, allowed_host_ports: tuple[int, ...],
+    ) -> None:
+        if rate_limit_mbit > 0:
+            try:
+                await self._run("tc", "qdisc", "del", "dev", tap_name, "root")
+            except subprocess.CalledProcessError:
+                pass
+
+        try:
+            await self._run(
+                "iptables", "-D", "INPUT",
+                "-i", self.bridge, "-s", vm_ip,
+                "-j", "DROP",
+            )
+        except subprocess.CalledProcessError:
+            pass
+
+        for port in allowed_host_ports:
+            for proto in ("tcp", "udp"):
+                try:
+                    await self._run(
+                        "iptables", "-D", "INPUT",
+                        "-i", self.bridge, "-s", vm_ip,
+                        "-p", proto, "--dport", str(port),
+                        "-j", "ACCEPT",
+                    )
+                except subprocess.CalledProcessError:
+                    pass
 
     async def _run(self, *cmd: str) -> None:
         proc = await asyncio.create_subprocess_exec(

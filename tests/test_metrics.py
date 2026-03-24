@@ -126,6 +126,8 @@ async def boot_vm_with_mocks(manager: PoolManager) -> VMInstance:
     manager._run_subprocess = AsyncMock(return_value=None)
     manager._wait_for_socket = AsyncMock(return_value=None)
     manager._network.create_tap = AsyncMock(return_value=None)
+    manager._network.apply_vm_rules = AsyncMock(return_value=None)
+    manager._network.remove_vm_rules = AsyncMock(return_value=None)
 
     fake_proc = MagicMock()
     fake_proc.returncode = None
