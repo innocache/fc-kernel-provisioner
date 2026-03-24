@@ -416,6 +416,10 @@ class PoolManager:
             and os.path.isfile(self._config.firecracker_path)
         ):
             return
+        os.makedirs(self._config.snapshot_dir, exist_ok=True)
+        if os.stat(self._config.snapshot_dir).st_dev != os.stat(self._config.chroot_base).st_dev:
+            logger.info("Snapshot dir and chroot_base on different filesystems — skipping snapshots")
+            return
         logger.info("Creating golden snapshot...")
         try:
             await self.create_golden_snapshot()
