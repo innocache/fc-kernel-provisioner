@@ -290,7 +290,7 @@ def save_results(results: list[TimingResult], path: str) -> None:
 
 # ── Main ─────────────────────────────────────────────────────────────────
 
-async def run_profiler(url: str, iterations: int, output: str | None) -> None:
+async def run_profiler(url: str, iterations: int, output: str | None, skip_dashboards: bool = False) -> None:
     results: list[TimingResult] = []
 
     async with httpx.AsyncClient(base_url=url, timeout=120.0) as client:
@@ -325,10 +325,13 @@ async def run_profiler(url: str, iterations: int, output: str | None) -> None:
         results.append(await bench_session_lifecycle(client, iterations))
 
         # --- Dashboard Tiers ---
-        print("[5/7] Dashboard launch tiers...")
-        for tier, code in DASHBOARD_TIERS.items():
-            print(f"  {tier}...")
-            results.append(await bench_dashboard_tier(client, tier, code, iterations))
+        if not skip_dashboards:
+            print("[5/7] Dashboard launch tiers...")
+            for tier, code in DASHBOARD_TIERS.items():
+                print(f"  {tier}...")
+                results.append(await bench_dashboard_tier(client, tier, code, iterations))
+        else:
+            print("[5/7] Dashboard tiers — SKIPPED")
 
         # --- Concurrent Light ---
         print("[6/7] Concurrent: 5 sessions × 3 executions...")
@@ -349,9 +352,10 @@ def main():
     parser.add_argument("--url", default="http://localhost:8000")
     parser.add_argument("--iterations", type=int, default=5)
     parser.add_argument("--output", default=None, help="JSON output path")
+    parser.add_argument("--skip-dashboards", action="store_true", help="Skip dashboard tier benchmarks")
     args = parser.parse_args()
 
-    asyncio.run(run_profiler(args.url, args.iterations, args.output))
+    asyncio.run(run_profiler(args.url, args.iterations, args.output, skip_dashboards=args.skip_dashboards))
 
 
 if __name__ == "__main__":
