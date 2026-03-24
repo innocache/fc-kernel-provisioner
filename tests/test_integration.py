@@ -377,3 +377,83 @@ class TestPoolMetrics:
             assert "fc_pool_vms_total" in body
             assert "fc_pool_max_vms" in body
             assert "# HELP" in body
+
+
+class TestDashboardIntegration:
+    async def test_dashboard_launch_and_access(self):
+        async with aiohttp.ClientSession() as http:
+            create = await http.post(f"{EXECUTION_API_URL}/sessions")
+            assert create.status == 200
+            sid = (await create.json())["session_id"]
+            try:
+                resp = await http.post(
+                    f"{EXECUTION_API_URL}/sessions/{sid}/dashboard",
+                    json={"code": "import panel as pn\npn.panel('hello').servable()"},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["url"].startswith(f"/dash/{sid}/")
+                dash = await http.get(f"http://localhost:8080{data['url']}")
+                assert dash.status == 200
+            finally:
+                await http.delete(f"{EXECUTION_API_URL}/sessions/{sid}")
+
+    async def test_dashboard_data_from_kernel(self):
+        async with aiohttp.ClientSession() as http:
+            create = await http.post(f"{EXECUTION_API_URL}/sessions")
+            sid = (await create.json())["session_id"]
+            try:
+                await http.post(
+                    f"{EXECUTION_API_URL}/sessions/{sid}/execute",
+                    json={
+                        "code": (
+                            "import pandas as pd\n"
+                            "pd.DataFrame({'x': [1, 2, 3]}).to_parquet('/data/processed.parquet')"
+                        ),
+                    },
+                )
+                resp = await http.post(
+                    f"{EXECUTION_API_URL}/sessions/{sid}/dashboard",
+                    json={
+                        "code": (
+                            "import pandas as pd, panel as pn\n"
+                            "df = pd.read_parquet('/data/processed.parquet')\n"
+                            "pn.panel(df).servable()"
+                        ),
+                    },
+                )
+                assert resp.status == 200
+            finally:
+                await http.delete(f"{EXECUTION_API_URL}/sessions/{sid}")
+
+    async def test_dashboard_replace(self):
+        async with aiohttp.ClientSession() as http:
+            create = await http.post(f"{EXECUTION_API_URL}/sessions")
+            sid = (await create.json())["session_id"]
+            try:
+                r1 = await http.post(
+                    f"{EXECUTION_API_URL}/sessions/{sid}/dashboard",
+                    json={"code": "import panel as pn\npn.panel('v1').servable()"},
+                )
+                r2 = await http.post(
+                    f"{EXECUTION_API_URL}/sessions/{sid}/dashboard",
+                    json={"code": "import panel as pn\npn.panel('v2').servable()"},
+                )
+                assert r1.status == 200
+                assert r2.status == 200
+                assert (await r1.json())["app_id"] != (await r2.json())["app_id"]
+            finally:
+                await http.delete(f"{EXECUTION_API_URL}/sessions/{sid}")
+
+    async def test_dashboard_cleanup_on_session_delete(self):
+        async with aiohttp.ClientSession() as http:
+            create = await http.post(f"{EXECUTION_API_URL}/sessions")
+            sid = (await create.json())["session_id"]
+            launch = await http.post(
+                f"{EXECUTION_API_URL}/sessions/{sid}/dashboard",
+                json={"code": "import panel as pn\npn.panel('bye').servable()"},
+            )
+            url = (await launch.json())["url"]
+            await http.delete(f"{EXECUTION_API_URL}/sessions/{sid}")
+            dead = await http.get(f"http://localhost:8080{url}")
+            assert dead.status in (404, 502)
