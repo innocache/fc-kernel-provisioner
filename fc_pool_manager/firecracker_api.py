@@ -28,6 +28,15 @@ class FirecrackerAPI:
                     f"Firecracker API error: PUT {path} -> {resp.status}: {text}"
                 )
 
+    async def _patch(self, path: str, body: dict[str, Any]) -> None:
+        async with aiohttp.ClientSession(connector=self._connector()) as session:
+            resp = await session.patch(f"{self._base_url}{path}", json=body)
+            if resp.status >= 400:
+                text = await resp.text()
+                raise RuntimeError(
+                    f"Firecracker API error: PATCH {path} -> {resp.status}: {text}"
+                )
+
     def _machine_config_body(self, vcpu: int, mem_mib: int) -> dict:
         return {"vcpu_count": vcpu, "mem_size_mib": mem_mib}
 
@@ -78,3 +87,37 @@ class FirecrackerAPI:
 
     async def start(self) -> None:
         await self._put("/actions", {"action_type": "InstanceStart"})
+
+    async def pause(self) -> None:
+        await self._patch("/vm", {"state": "Paused"})
+
+    async def create_snapshot(self, snapshot_path: str, mem_path: str) -> None:
+        await self._put(
+            "/snapshot/create",
+            {
+                "snapshot_type": "Full",
+                "snapshot_path": snapshot_path,
+                "mem_file_path": mem_path,
+            },
+        )
+
+    async def load_snapshot(
+        self,
+        snapshot_path: str,
+        mem_path: str,
+        network_overrides: list[dict] | None = None,
+    ) -> None:
+        body: dict[str, Any] = {
+            "snapshot_path": snapshot_path,
+            "mem_backend": {
+                "backend_path": mem_path,
+                "backend_type": "File",
+            },
+            "resume_vm": False,
+        }
+        if network_overrides:
+            body["network_overrides"] = network_overrides
+        await self._put("/snapshot/load", body)
+
+    async def resume(self) -> None:
+        await self._patch("/vm", {"state": "Resumed"})
