@@ -105,19 +105,13 @@ class FirecrackerAPI:
         self,
         snapshot_path: str,
         mem_path: str,
-        network_overrides: list[dict] | None = None,
     ) -> None:
-        body: dict[str, Any] = {
+        await self._put("/snapshot/load", {
             "snapshot_path": snapshot_path,
-            "mem_backend": {
-                "backend_path": mem_path,
-                "backend_type": "File",
-            },
+            "mem_file_path": mem_path,
+            "enable_diff_snapshots": False,
             "resume_vm": False,
-        }
-        if network_overrides:
-            body["network_overrides"] = network_overrides
-        await self._put("/snapshot/load", body)
+        })
 
     async def resume(self) -> None:
         await self._patch("/vm", {"state": "Resumed"})

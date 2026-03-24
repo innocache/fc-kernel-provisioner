@@ -123,7 +123,7 @@ async def test_create_snapshot_sends_put():
     )
 
 
-async def test_load_snapshot_sends_put_with_mem_backend():
+async def test_load_snapshot_sends_put():
     api = FirecrackerAPI(socket_path="/tmp/test.sock")
     with patch.object(api, "_put", new=AsyncMock()) as mock_put:
         await api.load_snapshot("vmstate", "memory")
@@ -131,30 +131,9 @@ async def test_load_snapshot_sends_put_with_mem_backend():
         "/snapshot/load",
         {
             "snapshot_path": "vmstate",
-            "mem_backend": {
-                "backend_path": "memory",
-                "backend_type": "File",
-            },
+            "mem_file_path": "memory",
+            "enable_diff_snapshots": False,
             "resume_vm": False,
-        },
-    )
-
-
-async def test_load_snapshot_with_network_overrides():
-    api = FirecrackerAPI(socket_path="/tmp/test.sock")
-    overrides = [{"iface_id": "eth0", "host_dev_name": "tap-test"}]
-    with patch.object(api, "_put", new=AsyncMock()) as mock_put:
-        await api.load_snapshot("vmstate", "memory", network_overrides=overrides)
-    mock_put.assert_awaited_once_with(
-        "/snapshot/load",
-        {
-            "snapshot_path": "vmstate",
-            "mem_backend": {
-                "backend_path": "memory",
-                "backend_type": "File",
-            },
-            "resume_vm": False,
-            "network_overrides": overrides,
         },
     )
 

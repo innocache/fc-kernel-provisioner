@@ -304,14 +304,24 @@ class PoolManager:
         os.chown(vmstate_dest, self._config.jailer_uid, self._config.jailer_gid)
         os.chown(memory_dest, self._config.jailer_uid, self._config.jailer_gid)
 
+        golden_tap = self._snapshot.golden_tap_name
+        if golden_tap and golden_tap != vm.tap_name:
+            await self._network._run(
+                "ip", "link", "set", vm.tap_name, "name", golden_tap,
+            )
+
         api_socket = await self._start_jailer(vm)
         api = FirecrackerAPI(api_socket)
         await api.load_snapshot(
             snapshot_path="vmstate",
             mem_path="memory",
-            network_overrides=[{"iface_id": "eth0", "host_dev_name": vm.tap_name}],
         )
         await api.resume()
+
+        if golden_tap and golden_tap != vm.tap_name:
+            await self._network._run(
+                "ip", "link", "set", golden_tap, "name", vm.tap_name,
+            )
 
     async def _wait_for_guest_agent(self, vm: VMInstance) -> None:
         from .vsock import vsock_request
@@ -348,7 +358,7 @@ class PoolManager:
                 os.path.join(vm.jail_path, "memory"),
                 self._snapshot.memory_path,
             )
-            self._snapshot.save_metadata()
+            self._snapshot.save_metadata(golden_tap_name=vm.tap_name)
             self._snapshot_valid = True
             logger.info("Created golden snapshot in %s", self._config.snapshot_dir)
         except Exception:

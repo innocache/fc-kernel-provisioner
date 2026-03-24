@@ -16,6 +16,7 @@ class SnapshotMetadata:
     kernel_hash: str
     rootfs_hash: str
     firecracker_path: str
+    golden_tap_name: str = ""
 
 
 class SnapshotManager:
@@ -42,11 +43,12 @@ class SnapshotManager:
     def _metadata_path(self) -> str:
         return os.path.join(self._dir, METADATA_FILE)
 
-    def _current_metadata(self) -> SnapshotMetadata:
+    def _current_metadata(self, golden_tap_name: str = "") -> SnapshotMetadata:
         return SnapshotMetadata(
             kernel_hash=self._file_hash(self._kernel_path),
             rootfs_hash=self._file_hash(self._rootfs_path),
             firecracker_path=self._firecracker_path,
+            golden_tap_name=golden_tap_name,
         )
 
     @staticmethod
@@ -79,15 +81,27 @@ class SnapshotManager:
             logger.exception("Failed validating snapshot metadata")
             return False
 
-    def save_metadata(self) -> None:
+    @property
+    def golden_tap_name(self) -> str:
+        meta_path = self._metadata_path()
+        if os.path.isfile(meta_path):
+            try:
+                with open(meta_path) as f:
+                    return json.load(f).get("golden_tap_name", "")
+            except Exception:
+                pass
+        return ""
+
+    def save_metadata(self, golden_tap_name: str = "") -> None:
         os.makedirs(self._dir, exist_ok=True)
-        meta = self._current_metadata()
+        meta = self._current_metadata(golden_tap_name=golden_tap_name)
         with open(self._metadata_path(), "w") as f:
             json.dump(
                 {
                     "kernel_hash": meta.kernel_hash,
                     "rootfs_hash": meta.rootfs_hash,
                     "firecracker_path": meta.firecracker_path,
+                    "golden_tap_name": meta.golden_tap_name,
                 },
                 f,
             )
