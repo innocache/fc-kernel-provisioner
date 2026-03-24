@@ -9,8 +9,8 @@ Kernel Gateway ──→ FirecrackerProvisioner ──→ Pool Manager ──→
                    (Jupyter plugin)           (asyncio daemon)   (ipykernel via vsock)
 ```
 
-1. **Pool Manager** pre-warms a pool of jailed Firecracker microVMs, each with its own network namespace, CoW rootfs, and vsock channel
-2. **Firecracker Provisioner** (a Jupyter `KernelProvisionerBase` plugin) acquires a VM from the pool, starts ipykernel inside it via vsock, and wires ZMQ traffic over TAP networking
+1. **Pool Manager** maintains a warm pool of jailed Firecracker microVMs for ~37ms session creation, with snapshot restore for ~190ms VM boot
+2. **WarmPoolProvisioner** (a Jupyter `KernelProvisionerBase` plugin) acquires pre-warmed kernels so sessions skip the ~780ms in-VM ipykernel startup path
 3. The **Kernel Gateway** talks to the kernel as if it were a local process — standard Jupyter protocol, no modifications
 
 Each VM is fully isolated: separate cgroups, user/pid/mount namespaces, seccomp filter (via jailer), and ebtables rules blocking VM-to-VM traffic.
@@ -21,6 +21,7 @@ Each VM is fully isolated: separate cgroups, user/pid/mount namespaces, seccomp 
 fc-kernel-provisioner/
 ├── fc_provisioner/          # Jupyter kernel provisioner plugin
 │   ├── provisioner.py       # FirecrackerProvisioner + FirecrackerProcess
+│   ├── warm_pool.py         # WarmPoolProvisioner (warm kernel pool)
 │   ├── pool_client.py       # Async HTTP client for pool manager
 │   └── vsock_client.py      # Length-prefixed JSON over AF_VSOCK
 │
@@ -29,6 +30,8 @@ fc-kernel-provisioner/
 │   ├── vm.py                # VMInstance, VMState, CIDAllocator
 │   ├── network.py           # TAP creation, IP allocation, MAC generation
 │   ├── config.py            # YAML config loader
+│   ├── snapshot.py          # Golden snapshot management
+│   ├── metrics.py           # Prometheus metric definitions
 │   ├── firecracker_api.py   # Firecracker REST client
 │   └── server.py            # aiohttp Unix socket API
 │
@@ -49,6 +52,8 @@ fc-kernel-provisioner/
 │   ├── setup-host.sh        # Host setup (with teardown + status modes)
 │   ├── run-tests.sh         # Test runner (unit/smoke/integration)
 │   ├── remote-test.sh       # Remote integration test runner
+│   ├── benchmark_api.py     # API performance profiler
+│   ├── benchmark_snapshot.py # Snapshot restore benchmark
 │   └── deploy.sh            # Production deployment manager
 │
 ├── sandbox_client/         # Python client library for chatbot backends
@@ -70,7 +75,7 @@ fc-kernel-provisioner/
 │   ├── Caddyfile                # Caddy reverse proxy config (dashboard routing)
 │   └── ...
 │
-└── tests/                   # 411 unit + 27 integration tests
+└── tests/                   # 476 unit + 27 integration tests
 ```
 
 ## Requirements
@@ -239,7 +244,7 @@ jailer:
 See [docs/testing.md](docs/testing.md) for the full testing plan.
 
 ```bash
-# Unit tests (411 tests, no KVM required)
+# Unit tests (476 tests, no KVM required)
 uv run pytest tests/ -v -m "not integration"
 
 # Smoke test (requires running services)
@@ -275,7 +280,9 @@ sudo ./guest/build_rootfs.sh --clean      # Remove built rootfs image
 
 ## Status
 
-All **8 spec components are complete**: sandboxed Python execution in Firecracker microVMs, structured result capture (stdout, stderr, errors, images, HTML) via `sandbox_client`, REST API (`execution_api`) with server-managed sessions, Prometheus metrics, VM auto-cull, interactive Panel dashboards served via Caddy, and Claude/OpenAI tool schemas. See [GitHub Issues](https://github.com/innocache/fc-kernel-provisioner/issues) for remaining work (network hardening, snapshot optimization).
+All **8 spec components are complete**: sandboxed Python execution in Firecracker microVMs, structured result capture (stdout, stderr, errors, images, HTML) via `sandbox_client`, REST API (`execution_api`) with server-managed sessions, Prometheus metrics, VM auto-cull, interactive Panel dashboards served via Caddy, and Claude/OpenAI tool schemas. All GitHub issues are closed.
+
+Session create is 37ms (25× optimized from 1,133ms). See [docs/performance-enhancements.md](docs/performance-enhancements.md) for details.
 
 ## License
 

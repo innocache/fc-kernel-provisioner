@@ -1,5 +1,7 @@
 # Performance Profile: Execution API
 
+**Note:** This document has been superseded by [docs/performance-enhancements.md](performance-enhancements.md) which consolidates all performance work.
+
 This document captures benchmark results from the Execution API profiler, covering in-session code execution latency, one-shot execution overhead, and VM cold-start costs. All numbers are from actual measurements — no synthetic estimates.
 
 ## Key Findings

@@ -45,7 +45,7 @@ Run anywhere — macOS, Linux, CI. Tests use mocks for all system interactions.
 uv run pytest tests/ -v -m "not integration"
 ```
 
-**411 unit tests (plus 27 integration tests).** Unit suite expected to pass in < 5 seconds.
+**476 unit tests (plus 27 integration tests).** Unit suite expected to pass in < 5 seconds.
 
 **What's covered:**
 
@@ -61,6 +61,9 @@ uv run pytest tests/ -v -m "not integration"
 | Vsock client | `test_vsock_client.py`, `test_vsock_client_edge_cases.py` | Message framing, encode/decode roundtrip, unicode, large payloads, truncated messages |
 | Pool client | `test_pool_client.py` | HTTP client construction |
 | Provisioner | `test_provisioner.py`, `test_provisioner_edge_cases.py` | Lifecycle (pre_launch, launch, cleanup), restart state reset, connection info roundtrip, signal forwarding |
+| Pre-warm | `test_prewarm.py` | Pre-warm kernel after boot, get_kernel_info after restore, acquire returns kernel info, ephemeral VM pre-warms, provisioner uses pre-warm key |
+| Snapshot reconfig | `test_snapshot_reconfig.py` | TAP detach/attach ordering, reconfig payload, golden TAP rename, fail-closed on reconfig failure |
+| Warm pool provisioner | `test_warm_pool_provisioner.py` | Pop from pool, fallback on empty, pool size decrement, replenish adds/rejects/retries, cleanup, initialization |
 | Output parser | `test_output_parser.py` | Jupyter message parsing → ExecutionResult. Stream/error/display_data/execute_reply handling. Mime bundle priority. Binary (PNG) vs text output. Malformed messages, edge cases |
 | Sandbox session | `test_session.py` | Lifecycle (start/stop/context manager), execute message format, timeout + interrupt, WebSocket error types, artifact store integration, HTTPS→WSS, msg_id filtering |
 | Artifact store | `test_artifact_store.py` | LocalArtifactStore file creation, URL generation, directory creation, overwrite, protocol compliance |
@@ -110,6 +113,8 @@ uv run pytest tests/test_integration.py -v -m integration
 | `TestDashboardIntegration` | Dashboard launch + browser access, data from kernel, dashboard replace, cleanup on session delete |
 
 **Prerequisites:** Pool manager running, Kernel Gateway running, Execution API running, Caddy running, rootfs built, network configured.
+
+> **Note:** Run Kernel Gateway as root (`sudo`) for vsock access to jailer chroot paths.
 
 ---
 

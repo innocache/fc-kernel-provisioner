@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-03-23-dashboard-serving-design.md`
 
-**Status:** All tasks complete. 411 unit + 27 integration tests passing.
+**Status:** All tasks complete. 476 unit + 27 integration tests passing.
 
 | Chunk | Status |
 |-------|--------|

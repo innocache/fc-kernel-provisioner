@@ -1,5 +1,7 @@
 # Snapshot Optimization — Firecracker VM Boot Acceleration
 
+**Note:** This document has been superseded by [docs/performance-enhancements.md](performance-enhancements.md) which consolidates all performance work.
+
 ## Overview
 
 Firecracker microVMs provide strong isolation but cold boot takes ~1,750–2,050ms — too slow for interactive use cases where a user expects a kernel to be ready in under a second. This document describes the snapshot optimization work that reduces VM boot time to **155ms median** (an **11.4x speedup**) by combining Firecracker's snapshot/restore API with XFS reflink copy-on-write.
