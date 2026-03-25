@@ -4,6 +4,8 @@
 }
 
 :8080 {
+    header Content-Security-Policy "frame-ancestors 'self' localhost:8501 127.0.0.1:8501"
+
     handle /api/kernels/* {
         reverse_proxy localhost:8888
     }
