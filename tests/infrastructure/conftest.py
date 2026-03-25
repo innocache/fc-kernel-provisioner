@@ -115,11 +115,14 @@ def _stop_services():
             except Exception:
                 pass
     _PROCS.clear()
-
     _full_cleanup()
 
 
 def _full_cleanup():
+    import platform
+    if platform.system() != "Linux":
+        return
+
     cleanup_cmds = [
         ["sudo", "pkill", "-f", "firecracker --id"],
         ["sudo", "rm", "-f", "/var/run/fc-pool.sock"],
@@ -173,4 +176,15 @@ def pytest_collection_modifyitems(config, items):
 
 def pytest_unconfigure(config):
     if _PROCS:
-        _stop_services()
+        for proc in _PROCS:
+            try:
+                proc.terminate()
+                proc.wait(timeout=10)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        _PROCS.clear()
+
+    _full_cleanup()
