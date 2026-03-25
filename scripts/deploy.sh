@@ -299,7 +299,9 @@ for tap in $(ip link show 2>/dev/null | grep -oP 'tap-\w+'); do
     sudo ip link delete "$tap" 2>/dev/null
 done
 sudo rm -f /var/run/fc-pool.sock
-sudo umount /srv/jailer 2>/dev/null
+sudo fuser -km /srv/jailer 2>/dev/null
+sleep 1
+sudo umount -f /srv/jailer 2>/dev/null
 sudo rm -f /var/lib/fc-jailer.xfs
 sudo rm -rf /srv/jailer/
 sudo rm -f /usr/local/bin/caddy
