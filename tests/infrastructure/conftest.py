@@ -115,30 +115,6 @@ def _stop_services():
             except Exception:
                 pass
     _PROCS.clear()
-    _full_cleanup()
-
-
-def _full_cleanup():
-    import platform
-    if platform.system() != "Linux":
-        return
-
-    cleanup_cmds = [
-        ["sudo", "pkill", "-f", "firecracker --id"],
-        ["sudo", "rm", "-f", "/var/run/fc-pool.sock"],
-        ["sudo", "rm", "-rf", "/srv/jailer/firecracker/vm-*"],
-        ["sudo", "rm", "-rf", "/srv/jailer/snapshots/*"],
-    ]
-    for cmd in cleanup_cmds:
-        subprocess.run(cmd, capture_output=True)
-
-    tap_result = subprocess.run(
-        ["ip", "link", "show"], capture_output=True, text=True,
-    )
-    for line in tap_result.stdout.splitlines():
-        if "tap-" in line:
-            tap = line.split(":")[1].strip().split("@")[0]
-            subprocess.run(["sudo", "ip", "link", "del", tap], capture_output=True)
 
 
 def pytest_configure(config):
@@ -176,15 +152,4 @@ def pytest_collection_modifyitems(config, items):
 
 def pytest_unconfigure(config):
     if _PROCS:
-        for proc in _PROCS:
-            try:
-                proc.terminate()
-                proc.wait(timeout=10)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-        _PROCS.clear()
-
-    _full_cleanup()
+        _stop_services()
