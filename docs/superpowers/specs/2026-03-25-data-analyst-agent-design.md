@@ -10,7 +10,7 @@ A sample data analytics agent that combines Claude's reasoning with sandboxed Py
 |----------|--------|-----------|
 | Frontend | Chainlit | Purpose-built for LLM chat+tools: step visualization, file upload, image display, streaming |
 | API layer | Execution API REST | Agent is just an HTTP client. Decoupled from infrastructure internals. |
-| LLM | Claude (Anthropic) | tool_use for structured code generation, strong at data analysis |
+| LLM | **Any LLM with tool/function calling** | Pluggable provider: Anthropic, OpenAI, Gemini, local (Ollama). Default: Claude. |
 | Agent pattern | ReAct loop | LLM sees execution output, decides next step. Handles multi-step analysis naturally. |
 | Session lifecycle | One sandbox session per chat | Kernel state persists across messages. Session destroyed on chat end. |
 | Location | `apps/data_analyst/` in this repo | Sample app alongside infrastructure |
@@ -114,9 +114,10 @@ Agent:
 
 ```
 apps/data_analyst/
-├── agent.py              # DataAnalystAgent class — Claude + tool execution loop
+├── agent.py              # DataAnalystAgent class — session + tool loop (LLM-agnostic)
+├── llm_provider.py       # LLMProvider protocol + Anthropic/OpenAI/Ollama implementations
 ├── app.py                # Chainlit handlers — on_chat_start, on_message, on_chat_end
-├── config.py             # Configuration (API URL, model, system prompt)
+├── config.py             # Configuration (API URL, LLM provider, system prompt, tools)
 ├── .chainlit/
 │   └── config.toml       # Chainlit settings (file upload, theme)
 └── chainlit.md           # Welcome message displayed on chat start
@@ -150,7 +151,8 @@ CAPABILITIES:
   - Pre-installed: numpy, pandas, matplotlib, scipy, plotly, seaborn, scikit-learn
   - State persists across calls (variables, imports, files)
   - Uploaded files are at /data/<filename>
-- launch_dashboard: Create an interactive Panel dashboard (opens in browser tab)
+- launch_dashboard: Create an interactive Panel dashboard (embedded in chat)
+- download_file: Read a file from the sandbox and send it to the user for download
 
 WORKFLOW:
 1. When data is uploaded, immediately load it and show df.head(), df.shape, df.dtypes
@@ -158,13 +160,15 @@ WORKFLOW:
 3. Show intermediate results — print DataFrames, statistics, value counts
 4. For visualizations, use matplotlib (plots appear inline in chat)
 5. For interactive exploration, use launch_dashboard with Panel + hvPlot
+6. When the user asks to export/download, save the file in the sandbox then use download_file
 
 RULES:
 - Always use matplotlib.use('Agg') before importing pyplot
 - Print results explicitly — the chat only sees stdout and images
 - For large DataFrames, show .head() or .describe(), not the full frame
 - Handle errors gracefully — if code fails, explain and retry
-- Be concise in explanations, let the data speak"""
+- Be concise in explanations, let the data speak
+- When saving files for download, use /data/ as the output directory"""
 
 TOOLS = [
     {
@@ -197,27 +201,160 @@ TOOLS = [
             "required": ["code"],
         },
     },
+    {
+        "name": "download_file",
+        "description": (
+            "Read a file from the sandbox and send it to the user for download. "
+            "First use execute_python_code to create the file (e.g., df.to_csv, plt.savefig, "
+            "df.to_excel), then call this tool with the file path to deliver it to the user."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute path to the file in the sandbox (e.g., /data/report.csv)",
+                },
+            },
+            "required": ["path"],
+        },
+    },
 ]
 ```
 
-### 6.2 agent.py
+### 6.2 llm_provider.py — Pluggable LLM Interface
+
+The agent is LLM-agnostic. All LLM interaction goes through a provider interface:
+
+```python
+@dataclass
+class ToolCall:
+    id: str
+    name: str
+    input: dict
+
+@dataclass
+class LLMResponse:
+    text: str | None
+    tool_calls: list[ToolCall]
+    stop_reason: str  # "end" | "tool_use"
+
+class LLMProvider(Protocol):
+    async def chat(
+        self,
+        messages: list[dict],
+        system: str,
+        tools: list[dict],
+    ) -> LLMResponse: ...
+```
+
+**Built-in providers:**
+
+```python
+class AnthropicProvider(LLMProvider):
+    """Claude via Anthropic API. Uses tool_use format natively."""
+    def __init__(self, model="claude-sonnet-4-20250514"):
+        self.client = anthropic.AsyncAnthropic()
+        self.model = model
+
+    async def chat(self, messages, system, tools) -> LLMResponse:
+        response = await self.client.messages.create(
+            model=self.model, max_tokens=4096,
+            system=system, tools=tools, messages=messages,
+        )
+        # Convert Anthropic content blocks → ToolCall / text
+        ...
+
+class OpenAIProvider(LLMProvider):
+    """GPT-4o, o1, etc. via OpenAI API. Converts tools to function_calling format."""
+    def __init__(self, model="gpt-4o"):
+        self.client = openai.AsyncOpenAI()
+        self.model = model
+
+    async def chat(self, messages, system, tools) -> LLMResponse:
+        # Convert tool definitions: input_schema → parameters
+        oai_tools = [{"type": "function", "function": {
+            "name": t["name"],
+            "description": t["description"],
+            "parameters": t["input_schema"],
+        }} for t in tools]
+        # Convert message format: Anthropic → OpenAI
+        oai_messages = [{"role": "system", "content": system}]
+        for m in messages:
+            oai_messages.append(_convert_message(m))
+        response = await self.client.chat.completions.create(
+            model=self.model, tools=oai_tools, messages=oai_messages,
+        )
+        # Convert function_call blocks → ToolCall
+        ...
+
+class OllamaProvider(LLMProvider):
+    """Local models via Ollama. Uses OpenAI-compatible API."""
+    def __init__(self, model="llama3.1", base_url="http://localhost:11434/v1"):
+        self.client = openai.AsyncOpenAI(base_url=base_url, api_key="ollama")
+        self.model = model
+    # Same as OpenAIProvider — Ollama uses OpenAI function_calling format
+```
+
+**Provider selection via environment variable:**
+
+```python
+# config.py
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "anthropic")  # anthropic | openai | ollama
+LLM_MODEL = os.environ.get("LLM_MODEL", "claude-sonnet-4-20250514")
+
+def create_provider() -> LLMProvider:
+    if LLM_PROVIDER == "anthropic":
+        return AnthropicProvider(model=LLM_MODEL)
+    elif LLM_PROVIDER == "openai":
+        return OpenAIProvider(model=LLM_MODEL)
+    elif LLM_PROVIDER == "ollama":
+        return OllamaProvider(model=LLM_MODEL)
+    else:
+        raise ValueError(f"Unknown LLM provider: {LLM_PROVIDER}")
+```
+
+**Usage examples:**
+
+```bash
+# Claude (default)
+ANTHROPIC_API_KEY=sk-ant-... chainlit run app.py
+
+# GPT-4o
+LLM_PROVIDER=openai LLM_MODEL=gpt-4o OPENAI_API_KEY=sk-... chainlit run app.py
+
+# Local Llama via Ollama
+LLM_PROVIDER=ollama LLM_MODEL=llama3.1 chainlit run app.py
+```
+
+**Tool format translation:**
+
+The tools are defined once in Anthropic's `input_schema` format (our canonical format — matches the existing `tool_schemas/claude.json`). Each provider converts to its native format:
+
+| Provider | Tool Format | Message Format |
+|----------|------------|----------------|
+| Anthropic | `input_schema` (native) | `tool_use` / `tool_result` content blocks |
+| OpenAI | `parameters` (renamed) | `function_call` / `tool_calls` in choices |
+| Ollama | `parameters` (OpenAI-compatible) | Same as OpenAI |
+
+### 6.3 agent.py
 
 Core responsibilities:
 - Manage sandbox session lifecycle (create on chat start, destroy on end)
 - Upload files to sandbox via code execution
-- Run the Claude tool_use loop
+- Download files from sandbox for user export
+- Run the LLM tool_use loop (via LLMProvider)
 - Extract images from execution results
 - Track dashboard URLs
 
 ```python
 class DataAnalystAgent:
-    def __init__(self, api_url, model):
+    def __init__(self, api_url, provider: LLMProvider):
         self.api_url = api_url
-        self.model = model
+        self.provider = provider
         self.session_id = None
         self.messages = []
         self._client = httpx.AsyncClient(...)
-        self._anthropic = anthropic.AsyncAnthropic()
 
     async def start_session(self) -> None:
         # POST /sessions → store session_id
@@ -229,7 +366,7 @@ class DataAnalystAgent:
 
     async def chat(self, user_message: str) -> AsyncGenerator[AgentEvent, None]:
         # Yields events: TextDelta, ToolStart, ToolResult, ImageOutput, DashboardLink
-        # Runs the Claude tool_use loop
+        # Runs the provider.chat() loop
         # Each tool call is yielded as ToolStart/ToolResult for step visualization
 
     async def end_session(self) -> None:
@@ -262,6 +399,12 @@ class ImageOutput:
 class DashboardLink:
     url: str       # relative path: /dash/{sid}/dash_{app_id}
     full_url: str  # absolute: http://localhost:8080/dash/...
+
+@dataclass
+class FileDownload:
+    filename: str
+    data: bytes
+    mime_type: str
 ```
 
 ### 6.3 app.py (Chainlit handlers)
@@ -312,6 +455,12 @@ async def on_message(message: cl.Message):
                 content=f"📊 Interactive dashboard ([open full screen]({event.full_url}))",
                 elements=elements,
             ).send()
+        elif isinstance(event, FileDownload):
+            file_el = cl.File(name=event.filename, content=event.data, display="inline")
+            await cl.Message(
+                content=f"📎 **{event.filename}** ready for download",
+                elements=[file_el],
+            ).send()
 
     await response_msg.update()
 
@@ -351,11 +500,14 @@ Upload a CSV, Excel, or JSON file and ask questions about your data.
 - "What are the top 10 products by revenue?"
 - "Show me the correlation matrix"
 - "Create an interactive dashboard for exploration"
+- "Export the cleaned data as CSV"
+- "Save the charts as a PDF report"
 
 **Capabilities:**
 - Python data analysis (pandas, numpy, scipy)
 - Static visualizations (matplotlib, seaborn, plotly)
 - Interactive dashboards (Panel + hvPlot)
+- File download (CSV, Excel, PDF, images)
 ```
 
 ## 7. Data Upload Flow
@@ -386,7 +538,71 @@ Agent automatically runs:
 
 For large files (>5MB), base64 encoding doubles the payload. Alternative for future optimization: upload via artifact store and mount in the VM. For v1, base64 is simple and works.
 
-## 8. Image Display Flow
+## 8. File Download Flow
+
+```
+User: "Export the cleaned data as CSV"
+
+Agent (LLM):
+  → execute_python_code:
+      df_cleaned.to_csv("/data/cleaned_data.csv", index=False)
+      print("Saved /data/cleaned_data.csv")
+  → download_file: {"path": "/data/cleaned_data.csv"}
+
+agent._download_file("/data/cleaned_data.csv"):
+  1. POST /sessions/{id}/execute with code:
+       import base64
+       with open("/data/cleaned_data.csv", "rb") as f:
+           data = f.read()
+       print(base64.b64encode(data).decode())
+  2. Decode base64 from stdout
+  3. Infer MIME type from extension
+  4. Yield FileDownload(filename="cleaned_data.csv", data=bytes, mime_type="text/csv")
+
+Chainlit:
+  → cl.File(name="cleaned_data.csv", content=bytes, display="inline")
+  → User sees download button in chat
+```
+
+### Download method on agent:
+
+```python
+async def _download_file(self, path: str) -> tuple[str, bytes]:
+    filename = path.rsplit("/", 1)[-1]
+    code = (
+        "import base64\n"
+        f"with open('{path}', 'rb') as f:\n"
+        "    data = f.read()\n"
+        "print(base64.b64encode(data).decode())"
+    )
+    resp = await self._client.post(
+        f"/sessions/{self.session_id}/execute",
+        json={"code": code},
+    )
+    result = resp.json()
+    if not result.get("success"):
+        raise RuntimeError(f"Failed to read {path}: {result.get('error', {}).get('value', 'unknown')}")
+    b64_data = result["stdout"].strip()
+    return filename, base64.b64decode(b64_data)
+```
+
+### Supported download types:
+
+| Extension | MIME Type | Typical Use |
+|-----------|----------|-------------|
+| `.csv` | `text/csv` | Cleaned data, aggregations |
+| `.xlsx` | `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` | Formatted reports |
+| `.json` | `application/json` | API-ready data |
+| `.parquet` | `application/vnd.apache.parquet` | Efficient data exchange |
+| `.png` | `image/png` | Charts, plots |
+| `.pdf` | `application/pdf` | Multi-page reports |
+| `.html` | `text/html` | Styled tables, plotly charts |
+
+### Size limits:
+
+Base64 encoding via stdout has a practical limit of ~10MB (stdout buffer). For larger exports, the artifact store provides a URL-based download path (future enhancement).
+
+## 9. Image Display Flow
 
 ```
 Claude generates: plt.savefig("/tmp/plot.png"); plt.show()
@@ -443,8 +659,11 @@ WebSocket for live updates flows through iframe
 apps = [
     "chainlit>=2.0",
     "anthropic>=0.40",
+    "openai>=1.0",
 ]
 ```
+
+`anthropic` is the default provider. `openai` is needed for OpenAI and Ollama providers (Ollama uses OpenAI-compatible API). No dependency needed for Ollama itself — it's a local server.
 
 Chainlit brings its own FastAPI server — runs on port 8501 by default. Does NOT conflict with the Execution API on port 8000.
 
