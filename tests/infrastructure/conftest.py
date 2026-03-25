@@ -151,7 +151,7 @@ def pytest_collection_modifyitems(config, items):
             "Set FC_START_SERVICES=1 to auto-start, or start manually."
         )
         for item in items:
-            if "integration" in str(item.fspath):
+            if "infrastructure" in str(item.fspath):
                 item.add_marker(skip)
 
 

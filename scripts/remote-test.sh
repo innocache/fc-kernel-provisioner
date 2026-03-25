@@ -336,7 +336,7 @@ fi
 info "Smoke test passed ✓"
 
 step "Running integration tests..."
-ssh "$HOST" "cd $REMOTE_DIR && EXECUTION_API_URL=http://localhost:8000 uv run pytest tests/integration -v -m 'not slow' --tb=short" || TEST_RC=$?
+ssh "$HOST" "cd $REMOTE_DIR && EXECUTION_API_URL=http://localhost:8000 uv run pytest tests/infrastructure -v -m 'not slow' --tb=short" || TEST_RC=$?
 
 if [[ $TEST_RC -ne 0 ]]; then
     fail "Integration tests failed (exit code $TEST_RC)"
