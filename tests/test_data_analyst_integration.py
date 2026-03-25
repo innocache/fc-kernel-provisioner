@@ -23,6 +23,20 @@ pytestmark = pytest.mark.integration
 
 EXECUTION_API_URL = os.environ.get("EXECUTION_API_URL", "http://localhost:8000")
 
+
+def _api_reachable() -> bool:
+    import socket
+    try:
+        s = socket.create_connection(("localhost", 8000), timeout=1)
+        s.close()
+        return True
+    except OSError:
+        return False
+
+
+if not _api_reachable():
+    pytestmark = [pytest.mark.integration, pytest.mark.skip(reason="Execution API not running on :8000")]
+
 TEST_CSV = b"product,region,revenue,units\nWidget A,North,12500,250\nWidget B,South,8300,166\nWidget A,East,15200,304\nWidget C,North,6100,122\nWidget B,West,9800,196\n"
 
 

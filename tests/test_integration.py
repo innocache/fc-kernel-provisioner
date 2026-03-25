@@ -22,6 +22,23 @@ GATEWAY_URL = os.environ.get("KERNEL_GATEWAY_URL", "http://localhost:8888")
 pytestmark = pytest.mark.integration
 
 
+def _services_reachable() -> bool:
+    import socket
+    for host, port in [("localhost", 8888), ("localhost", 8000)]:
+        try:
+            s = socket.create_connection((host, port), timeout=1)
+            s.close()
+        except OSError:
+            return False
+    return True
+
+
+_SKIP_REASON = "Integration services not running (KG:8888, API:8000)"
+
+if not _services_reachable():
+    pytestmark = [pytest.mark.integration, pytest.mark.skip(reason=_SKIP_REASON)]
+
+
 
 from sandbox_client import SandboxSession, LocalArtifactStore
 
