@@ -17,6 +17,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from fc_provisioner.pool_client import PoolClient
 from sandbox_client import ExecutionResult, LocalArtifactStore, SandboxSession
 
 from .caddy_client import CaddyClient, _vsock_request
@@ -80,6 +81,7 @@ class SessionEntry:
     created_at: float
     last_active: float
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    vm_id: str | None = None
     vm_ip: str | None = None
     vsock_path: str | None = None
     active_dashboard: str | None = None
@@ -145,10 +147,12 @@ class SessionManager:
                     pass
                 raise
 
+            vm_id = None
             vm_ip = None
             vsock_path = None
             try:
                 vm_info = await _lookup_vm_by_kernel(POOL_SOCKET, getattr(session, "_kernel_id", None))
+                vm_id = vm_info.get("vm_id")
                 vm_ip = vm_info.get("ip")
                 vsock_path = vm_info.get("vsock_path")
             except Exception:
@@ -161,6 +165,7 @@ class SessionManager:
                 session_id=session_id,
                 created_at=now,
                 last_active=now,
+                vm_id=vm_id,
                 vm_ip=vm_ip,
                 vsock_path=vsock_path,
                 active_dashboard=None,
@@ -177,9 +182,9 @@ class SessionManager:
             return False
 
         async with entry.lock:
-            if entry.vsock_path and entry.active_dashboard:
+            if entry.vm_id and entry.active_dashboard and _pool_client:
                 try:
-                    await _vsock_request(entry.vsock_path, {"action": "stop_dashboard"}, timeout=10)
+                    await _pool_client.stop_dashboard(entry.vm_id)
                 except Exception:
                     logger.debug("Failed to stop dashboard during delete", exc_info=True)
 
@@ -278,9 +283,16 @@ _cleanup_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_CLEANUPS)
 _cleanup_tasks: set[asyncio.Task] = set()
 
 
-def create_app(session_manager: SessionManager | None = None) -> FastAPI:
+_pool_client: PoolClient | None = None
+
+
+def create_app(session_manager: SessionManager | None = None, pool_client: PoolClient | None = None) -> FastAPI:
+    global _pool_client
     if session_manager is None:
         session_manager = SessionManager()
+    if pool_client is None:
+        pool_client = PoolClient(POOL_SOCKET)
+    _pool_client = pool_client
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -397,20 +409,20 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
         entry = session_manager.get(session_id)
         if entry is None:
             raise HTTPException(status_code=404, detail="session not found")
-        if entry.vsock_path is None or entry.vm_ip is None:
+        if entry.vm_id is None or entry.vm_ip is None:
             raise HTTPException(status_code=503, detail="VM info not available")
 
         async with entry.lock:
             if entry.active_dashboard is not None:
                 try:
-                    await _vsock_request(entry.vsock_path, {"action": "stop_dashboard"}, timeout=10)
+                    await pool_client.stop_dashboard(entry.vm_id)
                 except Exception:
                     logger.debug("Failed to stop existing dashboard before replacement", exc_info=True)
 
             app_id = uuid.uuid4().hex[:12]
             try:
-                resp = await _vsock_request(
-                    entry.vsock_path,
+                resp = await pool_client.launch_dashboard(
+                    entry.vm_id,
                     {
                         "action": "launch_dashboard",
                         "code": req.code,
@@ -419,10 +431,9 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
                         "session_id": session_id,
                         "allowed_origins": DASHBOARD_ALLOWED_ORIGINS,
                     },
-                    timeout=30,
                 )
             except Exception as exc:
-                raise HTTPException(status_code=503, detail=f"vsock error: {exc}")
+                raise HTTPException(status_code=503, detail=f"dashboard launch error: {exc}")
 
             if resp.get("status") != "ok":
                 raise HTTPException(status_code=500, detail=resp.get("message", "launch failed"))
@@ -431,7 +442,7 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
                 await caddy.add_route(session_id, f"{entry.vm_ip}:{DASHBOARD_PORT}")
             except Exception as exc:
                 try:
-                    await _vsock_request(entry.vsock_path, {"action": "stop_dashboard"}, timeout=10)
+                    await pool_client.stop_dashboard(entry.vm_id)
                 except Exception:
                     pass
                 raise HTTPException(status_code=503, detail=f"caddy route error: {exc}")
@@ -450,9 +461,9 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="session not found")
 
         async with entry.lock:
-            if entry.vsock_path and entry.active_dashboard:
+            if entry.vm_id and entry.active_dashboard:
                 try:
-                    await _vsock_request(entry.vsock_path, {"action": "stop_dashboard"}, timeout=10)
+                    await pool_client.stop_dashboard(entry.vm_id)
                 except Exception:
                     logger.debug("Failed to stop dashboard", exc_info=True)
 

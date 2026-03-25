@@ -26,6 +26,8 @@ def create_app(manager: PoolManager) -> web.Application:
     app.router.add_get("/api/pool/status", handle_pool_status)
     app.router.add_post("/api/vms/{vm_id}/bind-kernel", handle_bind_kernel)
     app.router.add_get("/api/vms/by-kernel/{kernel_id}", handle_vm_by_kernel)
+    app.router.add_post("/api/vms/{vm_id}/dashboard", handle_vm_dashboard_launch)
+    app.router.add_delete("/api/vms/{vm_id}/dashboard", handle_vm_dashboard_stop)
     app.router.add_get("/api/metrics", make_aiohttp_handler())
 
     return app
@@ -106,6 +108,38 @@ async def handle_vm_by_kernel(request: web.Request) -> web.Response:
     if data is None:
         return web.json_response({"error": "VM not found for kernel"}, status=404)
     return web.json_response(data)
+
+
+async def handle_vm_dashboard_launch(request: web.Request) -> web.Response:
+    manager: PoolManager = request.app["manager"]
+    vm_id = request.match_info["vm_id"]
+    vm = manager._vms.get(vm_id)
+    if vm is None:
+        return web.json_response({"error": "VM not found"}, status=404)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON body"}, status=400)
+    try:
+        from .vsock import vsock_request
+        resp = await vsock_request(vm.vsock_path, body, timeout=30)
+        return web.json_response(resp)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=503)
+
+
+async def handle_vm_dashboard_stop(request: web.Request) -> web.Response:
+    manager: PoolManager = request.app["manager"]
+    vm_id = request.match_info["vm_id"]
+    vm = manager._vms.get(vm_id)
+    if vm is None:
+        return web.json_response({"error": "VM not found"}, status=404)
+    try:
+        from .vsock import vsock_request
+        resp = await vsock_request(vm.vsock_path, {"action": "stop_dashboard"}, timeout=10)
+        return web.json_response(resp)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=503)
 
 
 async def run_server(config_path: str, socket_path: str) -> None:

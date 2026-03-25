@@ -48,6 +48,21 @@ class PoolClient:
             )
             resp.raise_for_status()
 
+    async def launch_dashboard(self, vm_id: str, body: dict) -> dict:
+        async with aiohttp.ClientSession(connector=self._connector()) as session:
+            resp = await session.post(
+                f"{self._base_url}/api/vms/{vm_id}/dashboard",
+                json=body,
+            )
+            return await resp.json()
+
+    async def stop_dashboard(self, vm_id: str) -> dict:
+        async with aiohttp.ClientSession(connector=self._connector()) as session:
+            resp = await session.delete(
+                f"{self._base_url}/api/vms/{vm_id}/dashboard",
+            )
+            return await resp.json()
+
     async def is_alive(self, vm_id: str) -> dict[str, Any]:
         """Check if a VM is still running. Returns full health dict."""
         async with aiohttp.ClientSession(connector=self._connector()) as session:

@@ -494,20 +494,26 @@ def mock_sandbox_session():
 
 
 @pytest.fixture
-async def client(mock_sandbox_session):
+def mock_pool_client():
+    pc = AsyncMock()
+    pc.launch_dashboard = AsyncMock(return_value={"status": "ok"})
+    pc.stop_dashboard = AsyncMock(return_value={"status": "ok"})
+    return pc
+
+
+@pytest.fixture
+async def client(mock_sandbox_session, mock_pool_client):
     with patch("execution_api.server.SandboxSession") as MockSession, \
          patch("execution_api.server._lookup_vm_by_kernel", new_callable=AsyncMock) as mock_lookup, \
-         patch("execution_api.server._vsock_request", new_callable=AsyncMock) as mock_vsock, \
          patch("execution_api.server.caddy.add_route", new_callable=AsyncMock), \
          patch("execution_api.server.caddy.remove_route", new_callable=AsyncMock):
         MockSession.return_value = mock_sandbox_session
-        mock_lookup.return_value = {"ip": "172.16.0.2", "vsock_path": "/tmp/v.sock"}
-        mock_vsock.return_value = {"status": "ok"}
+        mock_lookup.return_value = {"vm_id": "vm-test-1", "ip": "172.16.0.2", "vsock_path": "/tmp/v.sock"}
         mgr = SessionManager(
             gateway_url="http://test:8888", default_timeout=30,
             max_sessions=20, session_ttl=600,
         )
-        app = create_app(session_manager=mgr)
+        app = create_app(session_manager=mgr, pool_client=mock_pool_client)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
             transport=transport, base_url="http://test",
@@ -742,32 +748,33 @@ class TestDashboardEndpoints:
         c, _ = client
         sid = (await c.post("/sessions")).json()["session_id"]
         app_mgr = c._transport.app.state.session_manager
-        app_mgr.sessions[sid].vsock_path = None
+        app_mgr.sessions[sid].vm_id = None
+        app_mgr.sessions[sid].vm_ip = None
         resp = await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
         assert resp.status_code == 503
 
-    async def test_launch_dashboard_vsock_error(self, client):
+    async def test_launch_dashboard_pool_client_error(self, client, mock_pool_client):
         c, _ = client
         sid = (await c.post("/sessions")).json()["session_id"]
-        with patch("execution_api.server._vsock_request", side_effect=RuntimeError("down")):
-            resp = await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
+        mock_pool_client.launch_dashboard = AsyncMock(side_effect=RuntimeError("down"))
+        resp = await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
         assert resp.status_code == 503
 
-    async def test_launch_dashboard_panel_start_error(self, client):
+    async def test_launch_dashboard_panel_start_error(self, client, mock_pool_client):
         c, _ = client
         sid = (await c.post("/sessions")).json()["session_id"]
-        with patch("execution_api.server._vsock_request", return_value={"status": "error", "message": "bad code"}):
-            resp = await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
+        mock_pool_client.launch_dashboard = AsyncMock(return_value={"status": "error", "message": "bad code"})
+        resp = await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
         assert resp.status_code == 500
 
-    async def test_launch_dashboard_caddy_error_triggers_cleanup(self, client):
+    async def test_launch_dashboard_caddy_error_triggers_cleanup(self, client, mock_pool_client):
         c, _ = client
         sid = (await c.post("/sessions")).json()["session_id"]
-        with patch("execution_api.server._vsock_request", side_effect=[{"status": "ok"}, {"status": "ok"}]) as vsock, \
-             patch("execution_api.server.caddy.add_route", side_effect=RuntimeError("caddy down")):
+        mock_pool_client.stop_dashboard = AsyncMock(return_value={"status": "ok"})
+        with patch("execution_api.server.caddy.add_route", side_effect=RuntimeError("caddy down")):
             resp = await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
         assert resp.status_code == 503
-        assert vsock.await_count == 2
+        mock_pool_client.stop_dashboard.assert_awaited_once()
 
     async def test_launch_dashboard_replaces_existing(self, client):
         c, _ = client
@@ -794,16 +801,14 @@ class TestDashboardEndpoints:
         resp = await c.delete(f"/sessions/{sid}/dashboard")
         assert resp.status_code == 200
 
-    async def test_delete_session_stops_dashboard_and_removes_route(self, client):
+    async def test_delete_session_stops_dashboard_and_removes_route(self, client, mock_pool_client):
         c, _ = client
         sid = (await c.post("/sessions")).json()["session_id"]
         await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
-        with patch("execution_api.server._vsock_request", return_value={"status": "ok"}) as vsock, \
-             patch("execution_api.server.caddy.remove_route", new_callable=AsyncMock) as rm:
-            resp = await c.delete(f"/sessions/{sid}")
+        mock_pool_client.stop_dashboard.reset_mock()
+        resp = await c.delete(f"/sessions/{sid}")
         assert resp.status_code == 200
-        assert vsock.await_count >= 1
-        rm.assert_awaited_once_with(sid)
+        mock_pool_client.stop_dashboard.assert_awaited_once()
 
     async def test_delete_session_without_dashboard_is_unchanged(self, client):
         c, _ = client
