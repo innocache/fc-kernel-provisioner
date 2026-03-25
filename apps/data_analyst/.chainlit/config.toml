@@ -1,0 +1,12 @@
+[project]
+name = "Data Analyst"
+
+[features.spontaneous_file_upload]
+enabled = true
+accept = ["text/csv", "application/json", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "text/plain", "application/vnd.apache.parquet"]
+max_files = 5
+max_size_mb = 50
+
+[UI]
+name = "Data Analyst"
+description = "Upload data, ask questions, get analysis + interactive dashboards"

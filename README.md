@@ -195,6 +195,28 @@ print(resp.json()["stdout"])  # "42\n"
 
 Tool schemas for Claude and OpenAI (`execute_python_code` + `launch_dashboard`) are in `execution_api/tool_schemas/`. See `examples/` for complete chatbot integration scripts. Dashboards run inside the Firecracker VM (Panel-in-VM) and are served to browsers through Caddy reverse proxy at `/dash/{session_id}/`.
 
+## Data Analyst Agent
+
+Interactive data analysis chatbot powered by LLMs + sandboxed Python execution.
+
+```bash
+# Prerequisites: Execution API + Kernel Gateway + Pool Manager running
+export ANTHROPIC_API_KEY=sk-ant-...
+cd apps/data_analyst
+uv run --group apps chainlit run app.py --port 8501
+```
+
+Supports any LLM with tool calling:
+```bash
+# OpenAI
+LLM_PROVIDER=openai LLM_MODEL=gpt-4o OPENAI_API_KEY=sk-... uv run --group apps chainlit run app.py
+
+# Local (Ollama)
+LLM_PROVIDER=ollama LLM_MODEL=llama3.1 uv run --group apps chainlit run app.py
+```
+
+Features: file upload/download, inline matplotlib charts, embedded Panel dashboards, context window management, session recovery.
+
 ## Pool Manager API
 
 The pool manager exposes a Unix socket HTTP API at `/var/run/fc-pool.sock`:
