@@ -44,4 +44,5 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "integration: requires running pool manager and Kernel Gateway (deselect with '-m not integration')",
+    "slow: uses real LLM API calls, costs money (deselect with '-m not slow')",
 ]
