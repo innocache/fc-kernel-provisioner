@@ -13,7 +13,7 @@ _REPLENISH_RETRY_DELAY = 5.0
 
 class WarmPoolProvisioner(FirecrackerProvisioner):
 
-    _warm_pool: ClassVar[asyncio.Queue] = asyncio.Queue()
+    _warm_pool: ClassVar[Optional[asyncio.Queue]] = None
     _pool_target: ClassVar[int] = _DEFAULT_POOL_TARGET
     _pool_client: ClassVar[Optional[PoolClient]] = None
     _replenish_task: ClassVar[Optional[asyncio.Task]] = None
@@ -26,6 +26,8 @@ class WarmPoolProvisioner(FirecrackerProvisioner):
         if cls._initialized:
             return
         cls._initialized = True
+        if cls._warm_pool is None:
+            cls._warm_pool = asyncio.Queue()
         cls._pool_client = PoolClient(pool_socket)
         cls._vcpu = vcpu
         cls._mem_mib = mem_mib
@@ -72,11 +74,12 @@ class WarmPoolProvisioner(FirecrackerProvisioner):
             cls._replenish_task = asyncio.ensure_future(cls._replenish_loop())
 
     async def _get_valid_vm(self) -> dict | None:
-        try:
-            vm = await asyncio.wait_for(self._warm_pool.get(), timeout=30)
-        except asyncio.TimeoutError:
+        if self._warm_pool is None or self._warm_pool.empty():
             return None
-        return vm
+        try:
+            return self._warm_pool.get_nowait()
+        except asyncio.QueueEmpty:
+            return None
 
     async def pre_launch(self, **kwargs) -> dict[str, Any]:
         self._apply_config()

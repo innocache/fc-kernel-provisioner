@@ -57,7 +57,7 @@ def _make_prov(**overrides):
 
 
 @pytest.fixture(autouse=True)
-def reset_class_state():
+async def reset_class_state():
     WarmPoolProvisioner._initialized = False
     WarmPoolProvisioner._warm_pool = asyncio.Queue()
     WarmPoolProvisioner._pool_client = None
@@ -65,8 +65,12 @@ def reset_class_state():
     yield
     if WarmPoolProvisioner._replenish_task and not WarmPoolProvisioner._replenish_task.done():
         WarmPoolProvisioner._replenish_task.cancel()
+        try:
+            await WarmPoolProvisioner._replenish_task
+        except asyncio.CancelledError:
+            pass
     WarmPoolProvisioner._initialized = False
-    WarmPoolProvisioner._warm_pool = asyncio.Queue()
+    WarmPoolProvisioner._warm_pool = None
 
 
 class TestWarmPoolPreLaunch:
@@ -201,14 +205,22 @@ class TestWarmPoolCleanup:
 
 class TestInitialization:
     def test_ensure_initialized_once(self):
-        with patch("fc_provisioner.warm_pool.asyncio.ensure_future") as mock_ef:
+        def close_coro(coro):
+            coro.close()
+            return MagicMock()
+
+        with patch("fc_provisioner.warm_pool.asyncio.ensure_future", side_effect=close_coro) as mock_ef:
             WarmPoolProvisioner._ensure_initialized("/tmp/pool.sock", 1, 512)
             WarmPoolProvisioner._ensure_initialized("/tmp/pool.sock", 1, 512)
         mock_ef.assert_called_once()
         assert WarmPoolProvisioner._initialized is True
 
     def test_ensure_initialized_sets_config(self):
-        with patch("fc_provisioner.warm_pool.asyncio.ensure_future"):
+        def close_coro(coro):
+            coro.close()
+            return MagicMock()
+
+        with patch("fc_provisioner.warm_pool.asyncio.ensure_future", side_effect=close_coro):
             WarmPoolProvisioner._ensure_initialized("/tmp/pool.sock", 2, 1024)
         assert WarmPoolProvisioner._vcpu == 2
         assert WarmPoolProvisioner._mem_mib == 1024
