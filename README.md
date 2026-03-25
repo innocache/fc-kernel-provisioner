@@ -75,7 +75,7 @@ fc-kernel-provisioner/
 │   ├── Caddyfile                # Caddy reverse proxy config (dashboard routing)
 │   └── ...
 │
-└── tests/                   # 476 unit + 27 integration tests
+└── tests/                   # 486 unit + 30 integration tests
 ```
 
 ## Requirements
@@ -244,7 +244,7 @@ jailer:
 See [docs/testing.md](docs/testing.md) for the full testing plan.
 
 ```bash
-# Unit tests (476 tests, no KVM required)
+# Unit tests (486 tests, no KVM required)
 uv run pytest tests/ -v -m "not integration"
 
 # Smoke test (requires running services)

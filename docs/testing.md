@@ -45,7 +45,7 @@ Run anywhere — macOS, Linux, CI. Tests use mocks for all system interactions.
 uv run pytest tests/ -v -m "not integration"
 ```
 
-**476 unit tests (plus 27 integration tests).** Unit suite expected to pass in < 5 seconds.
+**486 unit tests (plus 30 integration tests).** Unit suite expected to pass in < 5 seconds.
 
 **What's covered:**
 
