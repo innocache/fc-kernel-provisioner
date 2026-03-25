@@ -22,7 +22,8 @@ async def on_message(message: cl.Message):
     agent: DataAnalystAgent = cl.user_session.get("agent")
 
     for el in message.elements or []:
-        content = open(el.path, "rb").read() if hasattr(el, "path") and el.path else getattr(el, "content", b"")
+        from pathlib import Path
+        content = Path(el.path).read_bytes() if hasattr(el, "path") and el.path else getattr(el, "content", b"")
         if not content:
             continue
         try:

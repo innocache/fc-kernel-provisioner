@@ -205,6 +205,8 @@ class DataAnalystAgent:
             return await self._execute(code)
         except (httpx.ConnectError, httpx.ReadError):
             logger.warning("Session lost, recreating...")
+            if self._client:
+                await self._client.aclose()
             await self.start_session()
             return {
                 "success": False, "stdout": "", "stderr": "",
