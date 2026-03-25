@@ -7,3 +7,4 @@ build/
 .pytest_cache/
 .worktrees/
 .chainlit/
+.DS_Store
