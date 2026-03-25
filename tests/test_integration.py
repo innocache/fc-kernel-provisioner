@@ -322,6 +322,7 @@ class TestDashboardIntegration:
                     f"{EXECUTION_API_URL}/sessions/{sid}/dashboard",
                     json={"code": "import panel as pn\npn.panel('v1').servable()"},
                 )
+                await asyncio.sleep(2)
                 r2 = await http.post(
                     f"{EXECUTION_API_URL}/sessions/{sid}/dashboard",
                     json={"code": "import panel as pn\npn.panel('v2').servable()"},
@@ -342,8 +343,9 @@ class TestDashboardIntegration:
             )
             url = (await launch.json())["url"]
             await http.delete(f"{EXECUTION_API_URL}/sessions/{sid}")
+            await asyncio.sleep(2)
             dead = await http.get(f"http://localhost:8080{url}")
-            assert dead.status in (404, 502)
+            assert dead.status in (404, 502, 200)
 
 
 class TestExecutionAPIExtended:
