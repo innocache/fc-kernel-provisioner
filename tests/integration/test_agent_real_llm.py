@@ -16,7 +16,7 @@ from apps.data_analyst.agent import (
 )
 from apps.data_analyst.llm_provider import AnthropicProvider
 
-pytestmark = [pytest.mark.integration, pytest.mark.slow]
+pytestmark = pytest.mark.slow
 
 EXECUTION_API_URL = os.environ.get("EXECUTION_API_URL", "http://localhost:8000")
 API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")

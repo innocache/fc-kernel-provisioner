@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-AGENT_PATH = os.path.join(os.path.dirname(__file__), "..", "guest", "fc_guest_agent.py")
+AGENT_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "guest", "fc_guest_agent.py")
 HEADER_FMT = "!I"
 
 

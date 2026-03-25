@@ -7,7 +7,7 @@ import pytest
 from fc_pool_manager.manager import PoolManager
 from fc_pool_manager.network import NetworkManager
 from fc_pool_manager.vm import VMInstance
-from tests.test_pool_manager import make_test_config
+from tests.unit.test_pool_manager import make_test_config
 
 
 def _make_vm(tmp_path, tap_name: str = "tap-vm-123") -> VMInstance:

@@ -201,7 +201,7 @@ trap 'teardown; exit $TEST_RC' EXIT
 
 if [[ "$UNIT_ONLY" == "true" ]]; then
     step "Running unit tests..."
-    ssh "$HOST" "cd $REMOTE_DIR && uv run pytest tests/ -v -m 'not integration' --tb=short" || TEST_RC=$?
+    ssh "$HOST" "cd $REMOTE_DIR && uv run pytest tests/unit -v --tb=short" || TEST_RC=$?
 
     if [[ $TEST_RC -eq 0 ]]; then
         info "Unit tests passed ✓"
@@ -318,7 +318,7 @@ fi
 # ── Run tests ────────────────────────────────────────────────────────────────
 
 step "Running unit tests..."
-ssh "$HOST" "cd $REMOTE_DIR && uv run pytest tests/ -v -m 'not integration' --tb=short" || TEST_RC=$?
+ssh "$HOST" "cd $REMOTE_DIR && uv run pytest tests/unit -v --tb=short" || TEST_RC=$?
 
 if [[ $TEST_RC -ne 0 ]]; then
     fail "Unit tests failed (exit code $TEST_RC)"
@@ -336,7 +336,7 @@ fi
 info "Smoke test passed ✓"
 
 step "Running integration tests..."
-ssh "$HOST" "cd $REMOTE_DIR && EXECUTION_API_URL=http://localhost:8000 uv run pytest tests/test_integration.py -v -m integration --tb=long -s" || TEST_RC=$?
+ssh "$HOST" "cd $REMOTE_DIR && EXECUTION_API_URL=http://localhost:8000 uv run pytest tests/integration -v -m 'not slow' --tb=short" || TEST_RC=$?
 
 if [[ $TEST_RC -ne 0 ]]; then
     fail "Integration tests failed (exit code $TEST_RC)"

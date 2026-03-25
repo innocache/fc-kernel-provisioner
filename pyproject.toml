@@ -41,8 +41,7 @@ packages = ["fc_provisioner", "fc_pool_manager", "sandbox_client", "execution_ap
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = ["tests/unit", "tests/integration"]
 markers = [
-    "integration: requires running pool manager and Kernel Gateway (deselect with '-m not integration')",
     "slow: uses real LLM API calls, costs money (deselect with '-m not slow')",
 ]
