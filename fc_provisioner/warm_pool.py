@@ -100,8 +100,7 @@ class WarmPoolProvisioner(FirecrackerProvisioner):
         self.kernel_key = vm.get("kernel_key")
         self.kernel_ports = vm.get("kernel_ports")
 
-        if self.kernel_key and hasattr(self, "parent") and hasattr(self.parent, "session"):
-            self.parent.session.key = self.kernel_key.encode("utf-8")
+        
 
         if self.vm_id and getattr(self, "kernel_id", None):
             try:
@@ -115,7 +114,8 @@ class WarmPoolProvisioner(FirecrackerProvisioner):
 
         self.connection_info["ip"] = self.vm_ip
         self.connection_info["transport"] = "tcp"
-        if hasattr(self, "parent") and hasattr(self.parent, "session"):
+        if self.kernel_key and hasattr(self, "parent") and hasattr(self.parent, "session"):
+            self.parent.session.key = self.kernel_key.encode("utf-8")
             self.connection_info["key"] = self.parent.session.key
             self.connection_info["signature_scheme"] = self.parent.session.signature_scheme
         if self.kernel_ports:
