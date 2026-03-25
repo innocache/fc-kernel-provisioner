@@ -170,9 +170,10 @@ class TestWarmPoolReplenish:
         WarmPoolProvisioner._pool_client = mock_client
         WarmPoolProvisioner._pool_target = 1
 
-        with patch("fc_provisioner.warm_pool._REPLENISH_RETRY_DELAY", 0.01):
+        with patch("fc_provisioner.warm_pool._REPLENISH_RETRY_DELAY", 0.01), \
+             patch("fc_provisioner.warm_pool._REPLENISH_POLL_INTERVAL", 0.01):
             task = asyncio.create_task(WarmPoolProvisioner._replenish_loop())
-            for _ in range(20):
+            for _ in range(40):
                 await asyncio.sleep(0.05)
                 if WarmPoolProvisioner._warm_pool.qsize() > 0:
                     break

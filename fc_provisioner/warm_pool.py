@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_POOL_TARGET = 3
 _REPLENISH_RETRY_DELAY = 5.0
+_REPLENISH_POLL_INTERVAL = 1.0
 
 
 class WarmPoolProvisioner(FirecrackerProvisioner):
@@ -61,7 +62,7 @@ class WarmPoolProvisioner(FirecrackerProvisioner):
                     logger.warning("Warm pool replenish failed: %s", exc)
                     await asyncio.sleep(_REPLENISH_RETRY_DELAY)
                     break
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(_REPLENISH_POLL_INTERVAL)
 
     @classmethod
     def _check_replenish_health(cls) -> None:
