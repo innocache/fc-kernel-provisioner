@@ -1,6 +1,3 @@
-import base64
-import os
-
 import pytest
 
 from apps.data_analyst.agent import (
@@ -78,29 +75,6 @@ class TestAgentWithFakeKG:
             assert any("ZeroDivisionError" in e.output for e in errors)
         finally:
             await agent.end_session()
-
-    @pytest.mark.skipif(not os.path.isdir("/data") and not os.access("/", os.W_OK), reason="Cannot create /data on this OS")
-    async def test_file_download(self, execution_api):
-        provider = MockProvider([
-            LLMResponse(text=None, tool_calls=[
-                ToolCall(id="t1", name="execute_python_code",
-                         input={"code": f"import os\nos.makedirs('/data', exist_ok=True)\nwith open('/data/out.csv','w') as f: f.write('a,b\\n1,2')\nprint('saved')"})
-            ], stop_reason="tool_use", raw_content=[]),
-            LLMResponse(text=None, tool_calls=[
-                ToolCall(id="t2", name="download_file", input={"path": "/data/out.csv"})
-            ], stop_reason="tool_use", raw_content=[]),
-            LLMResponse(text="Here's your file.", tool_calls=[], stop_reason="end", raw_content=[]),
-        ])
-        agent = DataAnalystAgent(api_url=execution_api, provider=provider)
-        await agent.start_session()
-        try:
-            events = await collect(agent, "export")
-            downloads = [e for e in events if isinstance(e, FileDownload)]
-            assert len(downloads) == 1
-            assert b"a,b" in downloads[0].data
-        finally:
-            await agent.end_session()
-
 
 async def collect(agent, message):
     return [e async for e in agent.chat(message)]

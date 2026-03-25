@@ -116,10 +116,26 @@ def _stop_services():
                 pass
     _PROCS.clear()
 
-    subprocess.run(
-        ["sudo", "rm", "-rf", "/var/run/fc-pool.sock"],
-        capture_output=True,
+    _full_cleanup()
+
+
+def _full_cleanup():
+    cleanup_cmds = [
+        ["sudo", "pkill", "-f", "firecracker --id"],
+        ["sudo", "rm", "-f", "/var/run/fc-pool.sock"],
+        ["sudo", "rm", "-rf", "/srv/jailer/firecracker/vm-*"],
+        ["sudo", "rm", "-rf", "/srv/jailer/snapshots/*"],
+    ]
+    for cmd in cleanup_cmds:
+        subprocess.run(cmd, capture_output=True)
+
+    tap_result = subprocess.run(
+        ["ip", "link", "show"], capture_output=True, text=True,
     )
+    for line in tap_result.stdout.splitlines():
+        if "tap-" in line:
+            tap = line.split(":")[1].strip().split("@")[0]
+            subprocess.run(["sudo", "ip", "link", "del", tap], capture_output=True)
 
 
 def pytest_configure(config):
