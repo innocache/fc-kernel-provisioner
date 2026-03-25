@@ -617,7 +617,7 @@ app.py creates cl.Image(content=bytes, display="inline")
 Chart appears inline in the chat message
 ```
 
-## 9. Dashboard Flow (Embedded)
+## 9b. Dashboard Flow (Embedded)
 
 ```
 Claude generates Panel code
@@ -651,7 +651,156 @@ WebSocket for live updates flows through iframe
 
 3. **User can pop out** — the "open full screen" link opens the same URL in a new tab for undocked exploration.
 
-## 10. Dependencies
+## 10. Context Window Management
+
+Long analysis sessions generate many tool_use + tool_result pairs. Each pair adds ~2-5KB. After 50 exchanges, the context window fills and LLM quality degrades.
+
+**Strategy: truncate old tool results, keep recent ones in full.**
+
+```python
+MAX_HISTORY_TOKENS = 80_000  # leave headroom for system prompt + response
+RECENT_KEEP_FULL = 10        # last N tool interactions kept verbatim
+TRUNCATED_OUTPUT_CHARS = 200  # older tool results truncated to this length
+
+def compact_messages(messages: list[dict]) -> list[dict]:
+    tool_indices = [i for i, m in enumerate(messages)
+                    if m["role"] == "user" and isinstance(m.get("content"), list)
+                    and any(c.get("type") == "tool_result" for c in m["content"])]
+    
+    if len(tool_indices) <= RECENT_KEEP_FULL:
+        return messages
+    
+    old_indices = set(tool_indices[:-RECENT_KEEP_FULL])
+    compacted = []
+    for i, m in enumerate(messages):
+        if i in old_indices:
+            compacted.append(_truncate_tool_results(m))
+        else:
+            compacted.append(m)
+    return compacted
+
+def _truncate_tool_results(message: dict) -> dict:
+    content = []
+    for block in message["content"]:
+        if block.get("type") == "tool_result":
+            text = block.get("content", "")
+            if len(text) > TRUNCATED_OUTPUT_CHARS:
+                text = text[:TRUNCATED_OUTPUT_CHARS] + "... [truncated]"
+            content.append({**block, "content": text})
+        else:
+            content.append(block)
+    return {**message, "content": content}
+```
+
+The agent calls `compact_messages()` before each LLM request. Recent tool results are preserved verbatim (the LLM needs them for reasoning). Older results are truncated to 200 chars (enough to know what happened, not enough to fill the context).
+
+## 11. File Size Limits
+
+### Upload limits
+
+| Size | Method | Latency |
+|------|--------|---------|
+| < 5MB | Base64 in execute (default) | ~500ms |
+| 5-50MB | Chunked upload (4MB chunks via multiple execute calls) | ~5s |
+| > 50MB | Not supported in v1 | — |
+
+```python
+UPLOAD_CHUNK_SIZE = 4 * 1024 * 1024  # 4MB per chunk
+
+async def upload_file(self, filename: str, content: bytes) -> str:
+    if len(content) > 50 * 1024 * 1024:
+        raise ValueError(f"File too large ({len(content)} bytes). Max 50MB.")
+    
+    if len(content) <= 5 * 1024 * 1024:
+        return await self._upload_single(filename, content)
+    return await self._upload_chunked(filename, content)
+
+async def _upload_chunked(self, filename: str, content: bytes) -> str:
+    total = len(content)
+    path = f"/data/{filename}"
+    for offset in range(0, total, UPLOAD_CHUNK_SIZE):
+        chunk = content[offset:offset + UPLOAD_CHUNK_SIZE]
+        b64 = base64.b64encode(chunk).decode()
+        mode = "wb" if offset == 0 else "ab"
+        code = (
+            f"import base64\n"
+            f"with open('{path}', '{mode}') as f:\n"
+            f"    f.write(base64.b64decode('{b64}'))\n"
+            f"print(f'Chunk {offset // (4*1024*1024) + 1}: {{offset + len(chunk)}}/{total} bytes')"
+        )
+        await self._client.post(
+            f"/sessions/{self.session_id}/execute",
+            json={"code": code},
+        )
+    return f"Saved {path} ({total} bytes, chunked)"
+```
+
+### Download limits
+
+| Size | Method | Notes |
+|------|--------|-------|
+| < 10MB | Base64 via stdout (default) | Returned as Chainlit File element |
+| > 10MB | Not supported in v1 | Future: artifact store URL |
+
+The agent checks file size before downloading:
+```python
+async def _download_file(self, path: str) -> tuple[str, bytes]:
+    # Check size first
+    size_resp = await self._client.post(
+        f"/sessions/{self.session_id}/execute",
+        json={"code": f"import os; print(os.path.getsize('{path}'))"},
+    )
+    size = int(size_resp.json()["stdout"].strip())
+    if size > 10 * 1024 * 1024:
+        raise ValueError(f"File too large for download ({size} bytes). Max 10MB.")
+    # Then read via base64
+    ...
+```
+
+## 12. Error Handling
+
+| Scenario | Detection | User Experience |
+|----------|-----------|----------------|
+| Code execution error | `result["success"] == False` | LLM sees the error, explains it, and retries with fixed code |
+| Sandbox session dies | Execute returns connection error | Agent creates a new session, tells user "Session restarted — previous variables are lost" |
+| LLM provider rate limited | 429 response from API | Retry with exponential backoff (3 attempts). Show "Thinking... (retry)" |
+| LLM provider down | Connection error | Show "LLM service unavailable. Please try again." |
+| File upload too large | Size check before upload | Show "File too large (X MB). Maximum is 50MB." |
+| File download too large | Size check before download | Show "File too large for download (X MB). Maximum is 10MB." |
+| download_file on missing path | Execute returns FileNotFoundError | LLM sees error: "File not found: /data/report.csv — save it first with execute_python_code" |
+| Browser refresh | Chainlit on_chat_end fires | Old session cleaned up. New session created on reconnect. |
+
+```python
+async def _execute_with_recovery(self, code: str) -> dict:
+    try:
+        resp = await self._client.post(
+            f"/sessions/{self.session_id}/execute",
+            json={"code": code},
+        )
+        return resp.json()
+    except (httpx.ConnectError, httpx.ReadError):
+        # Session died — recreate
+        await self.start_session()
+        return {"success": False, "stdout": "", "stderr": "",
+                "error": {"name": "SessionRestarted",
+                          "value": "Sandbox session was restarted. Previous variables are lost.",
+                          "traceback": []},
+                "outputs": [], "execution_count": 0}
+```
+
+## 13. Iframe Security
+
+Use restrictive Content-Security-Policy instead of blanket `X-Frame-Options ALLOWALL`:
+
+```
+# In config/Caddyfile, update the dashboard route:
+header Content-Security-Policy "frame-ancestors 'self' localhost:8501 127.0.0.1:8501"
+```
+
+This restricts iframe embedding to only the Chainlit host. External sites cannot embed dashboards.
+
+## 14. Dependencies
+
 
 ```toml
 # New optional dependency group in pyproject.toml
@@ -667,7 +816,7 @@ apps = [
 
 Chainlit brings its own FastAPI server — runs on port 8501 by default. Does NOT conflict with the Execution API on port 8000.
 
-## 11. Running the App
+## 15. Running the App
 
 ```bash
 # Prerequisites: Execution API + Kernel Gateway + Pool Manager running
@@ -682,26 +831,37 @@ chainlit run app.py --port 8501
 EXECUTION_API_URL=http://my-host:8000 chainlit run app.py
 ```
 
-## 12. Testing Plan
+## 16. Testing Plan
 
 | Test | Type | What it verifies |
 |------|------|-----------------|
 | Agent creates session on start | Unit | POST /sessions called, session_id stored |
 | Agent destroys session on end | Unit | DELETE /sessions/{id} called |
-| File upload encodes + executes | Unit | base64 encoding, execute called with write code |
+| File upload small (< 5MB) | Unit | Single base64 encode + execute |
+| File upload chunked (> 5MB) | Unit | Multiple execute calls with append mode |
+| File upload rejects > 50MB | Unit | ValueError raised |
+| File download reads via base64 | Unit | Execute + decode, FileDownload yielded |
+| File download rejects > 10MB | Unit | Size check, ValueError raised |
+| File download missing path | Unit | Friendly error returned to LLM |
 | Tool loop runs to completion | Unit | Multiple tool_use → text response cycle |
 | Image extraction from outputs | Unit | data_b64 decoded, ImageOutput yielded |
 | Dashboard URL returned | Unit | POST /dashboard, DashboardLink yielded |
 | Error handling in tool execution | Unit | Failed execution → error message, agent continues |
-| Full conversation E2E | Integration | Upload CSV → ask question → get chart → launch dashboard |
+| Session recovery on sandbox death | Unit | New session created, user notified |
+| Context window compaction | Unit | Old tool results truncated, recent kept in full |
+| LLM provider Anthropic | Unit | Tool format correct, message format correct |
+| LLM provider OpenAI | Unit | input_schema → parameters, message format converted |
+| LLM provider Ollama | Unit | Same as OpenAI with custom base_url |
+| Full conversation E2E | Integration | Upload CSV → ask question → get chart → download → dashboard |
 
-## 13. File Inventory
+## 17. File Inventory
 
 | File | New/Modify | Responsibility |
 |------|-----------|---------------|
-| `apps/data_analyst/agent.py` | New | DataAnalystAgent class — session, upload, chat loop |
+| `apps/data_analyst/agent.py` | New | DataAnalystAgent class — session, upload, download, chat loop |
+| `apps/data_analyst/llm_provider.py` | New | LLMProvider protocol + Anthropic/OpenAI/Ollama implementations |
 | `apps/data_analyst/app.py` | New | Chainlit handlers — on_start, on_message, on_end |
-| `apps/data_analyst/config.py` | New | Configuration, system prompt, tool definitions |
+| `apps/data_analyst/config.py` | New | Configuration, system prompt, tool definitions, size limits |
 | `apps/data_analyst/.chainlit/config.toml` | New | Chainlit UI settings |
 | `apps/data_analyst/chainlit.md` | New | Welcome screen content |
 | `pyproject.toml` | Modify | Add `apps` dependency group |
