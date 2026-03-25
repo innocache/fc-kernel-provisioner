@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-03-23-chatbot-integration-design.md`
 
-**Status:** All tasks complete. Full suite: 486 unit + 30 integration tests passing (current repo total).
+**Status:** All tasks complete. Full suite: 515 unit + 30 integration tests passing (current repo total).
 
 | Chunk | Status |
 |-------|--------|

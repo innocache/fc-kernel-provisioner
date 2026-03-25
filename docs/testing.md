@@ -45,7 +45,7 @@ Run anywhere — macOS, Linux, CI. Tests use mocks for all system interactions.
 uv run pytest tests/ -v -m "not integration"
 ```
 
-**486 unit tests (plus 30 integration tests).** Unit suite expected to pass in < 5 seconds.
+**515 unit tests (plus 30 integration tests).** Unit suite expected to pass in < 5 seconds.
 
 **What's covered:**
 
@@ -64,6 +64,7 @@ uv run pytest tests/ -v -m "not integration"
 | Pre-warm | `test_prewarm.py` | Pre-warm kernel after boot, get_kernel_info after restore, acquire returns kernel info, ephemeral VM pre-warms, provisioner uses pre-warm key |
 | Snapshot reconfig | `test_snapshot_reconfig.py` | TAP detach/attach ordering, reconfig payload, golden TAP rename, fail-closed on reconfig failure |
 | Warm pool provisioner | `test_warm_pool_provisioner.py` | Pop from pool, fallback on empty, pool size decrement, replenish adds/rejects/retries, cleanup, initialization |
+| Data analyst agent | `test_data_analyst.py` | LLM providers (Anthropic/OpenAI/Ollama creation, tool format conversion, message format), agent session lifecycle, file upload (small/chunked/oversized/sanitized), file download (success/oversized/path restriction), chat loop (text/tools/images/dashboards), context compaction, result formatting |
 | Output parser | `test_output_parser.py` | Jupyter message parsing → ExecutionResult. Stream/error/display_data/execute_reply handling. Mime bundle priority. Binary (PNG) vs text output. Malformed messages, edge cases |
 | Sandbox session | `test_session.py` | Lifecycle (start/stop/context manager), execute message format, timeout + interrupt, WebSocket error types, artifact store integration, HTTPS→WSS, msg_id filtering |
 | Artifact store | `test_artifact_store.py` | LocalArtifactStore file creation, URL generation, directory creation, overwrite, protocol compliance |

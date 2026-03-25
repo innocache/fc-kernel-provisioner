@@ -10,15 +10,15 @@
 
 **Spec:** `docs/superpowers/specs/2026-03-25-data-analyst-agent-design.md`
 
-**Status:** Not started.
+**Status:** All tasks complete. 515 unit + 30 integration tests passing.
 
 | Chunk | Status |
 |-------|--------|
-| 1: Dependencies + Config + Chainlit Setup (Task 1) | Not started |
-| 2: LLM Provider Abstraction (Tasks 2-3) | Not started |
-| 3: Agent Core (Tasks 4-5) | Not started |
-| 4: Chainlit App + Integration (Tasks 6-7) | Not started |
-| 5: Caddyfile Update + E2E Test (Task 8) | Not started |
+| 1: Dependencies + Config + Chainlit Setup (Task 1) | DONE |
+| 2: LLM Provider Abstraction (Tasks 2-3) | DONE |
+| 3: Agent Core (Tasks 4-5) | DONE |
+| 4: Chainlit App + Integration (Tasks 6-7) | DONE |
+| 5: Caddyfile Update + E2E Test (Task 8) | DONE |
 
 ---
 

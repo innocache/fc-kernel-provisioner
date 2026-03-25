@@ -27,7 +27,7 @@
 | Post-plan: Testing docs | **DONE** | docs/testing.md updated (PR #15) |
 | Post-plan: Graceful test skips | **DONE** | pytest.importorskip for optional deps (PR #16) |
 | Post-plan: README | **DONE** | Project README.md added (PR #24) |
-| **Integration testing on KVM host** | **DONE** | 486 unit + 30 integration tests passing (current repo total) |
+| **Integration testing on KVM host** | **DONE** | 515 unit + 30 integration tests passing (current repo total) |
 
 ---
 
