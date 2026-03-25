@@ -51,10 +51,12 @@ usage() {
 
 HOST=""
 COMMAND=""
+FORCE=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --help|-h) usage ;;
+        --force|-f) FORCE=true; shift ;;
         -*)        fail "Unknown option: $1"; usage ;;
         *)
             if [[ -z "$HOST" ]]; then
@@ -262,13 +264,15 @@ cmd_logs() {
 cmd_teardown() {
     verify_ssh
 
-    echo ""
-    warn "This will remove ALL deployed services, data, and host setup from $HOST."
-    echo ""
-    read -rp "Type 'yes' to confirm teardown: " CONFIRM
-    if [[ "$CONFIRM" != "yes" ]]; then
-        info "Teardown cancelled"
-        exit 0
+    if [[ "$FORCE" != "true" ]]; then
+        echo ""
+        warn "This will remove ALL deployed services, data, and host setup from $HOST."
+        echo ""
+        read -rp "Type 'yes' to confirm teardown: " CONFIRM
+        if [[ "$CONFIRM" != "yes" ]]; then
+            info "Teardown cancelled"
+            exit 0
+        fi
     fi
 
     step "Stopping and disabling services..."
@@ -282,15 +286,23 @@ sudo rm -f /etc/systemd/system/fc-kernel-gateway.service
 sudo systemctl daemon-reload
 TEARDOWN_UNITS_EOF
 
-    step "Cleaning up VMs..."
+    step "Cleaning up VMs and XFS..."
     ssh "$HOST" "bash -s" <<'TEARDOWN_VMS_EOF'
 set +e
-sudo pkill -f "firecracker --id" 2>/dev/null
+sudo pkill -9 -f "firecracker" 2>/dev/null
+sudo pkill -f "pool_manager" 2>/dev/null
+sudo pkill -f "kernelgateway" 2>/dev/null
+sudo pkill -f "execution_api" 2>/dev/null
+sudo pkill -f "caddy" 2>/dev/null
+sleep 2
 for tap in $(ip link show 2>/dev/null | grep -oP 'tap-\w+'); do
     sudo ip link delete "$tap" 2>/dev/null
 done
-sudo rm -rf /srv/jailer/firecracker/*/
 sudo rm -f /var/run/fc-pool.sock
+sudo umount /srv/jailer 2>/dev/null
+sudo rm -f /var/lib/fc-jailer.xfs
+sudo rm -rf /srv/jailer/
+sudo rm -f /usr/local/bin/caddy
 TEARDOWN_VMS_EOF
 
     step "Tearing down network..."
@@ -304,7 +316,7 @@ TEARDOWN_VMS_EOF
 
     step "Removing symlink and deployed code..."
     ssh "$HOST" "sudo rm -f $OPT_DIR"
-    ssh "$HOST" "rm -rf $REMOTE_DIR"
+    ssh "$HOST" "sudo rm -rf $REMOTE_DIR"
 
     info "Teardown complete — host restored ✓"
 }
