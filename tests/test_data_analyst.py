@@ -323,6 +323,169 @@ class TestContextCompaction:
         assert recent_result == "x" * 500
 
 
+class TestOpenAIMessageConversion:
+    @patch("apps.data_analyst.llm_provider.openai", create=True)
+    def test_user_message_converted(self, _):
+        provider = OpenAIProvider.__new__(OpenAIProvider)
+        messages = [{"role": "user", "content": "hello"}]
+        oai = provider._convert_messages(messages, "system prompt")
+        assert oai[0] == {"role": "system", "content": "system prompt"}
+        assert oai[1] == {"role": "user", "content": "hello"}
+
+    @patch("apps.data_analyst.llm_provider.openai", create=True)
+    def test_tool_result_converted(self, _):
+        provider = OpenAIProvider.__new__(OpenAIProvider)
+        messages = [
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "output text"},
+            ]},
+        ]
+        oai = provider._convert_messages(messages, "sys")
+        assert oai[1] == {"role": "tool", "tool_call_id": "t1", "content": "output text"}
+
+    @patch("apps.data_analyst.llm_provider.openai", create=True)
+    def test_assistant_tool_use_converted(self, _):
+        provider = OpenAIProvider.__new__(OpenAIProvider)
+        tool_block = MagicMock()
+        tool_block.type = "tool_use"
+        tool_block.id = "t1"
+        tool_block.name = "execute_python_code"
+        tool_block.input = {"code": "print(1)"}
+        messages = [{"role": "assistant", "content": [tool_block]}]
+        oai = provider._convert_messages(messages, "sys")
+        assert oai[1]["role"] == "assistant"
+        assert oai[1]["tool_calls"][0]["id"] == "t1"
+        assert oai[1]["tool_calls"][0]["function"]["name"] == "execute_python_code"
+
+
+class TestMultiToolResponse:
+    async def test_two_tools_in_one_response(self):
+        provider = AsyncMock()
+        provider.chat = AsyncMock(side_effect=[
+            LLMResponse(
+                text=None,
+                tool_calls=[
+                    ToolCall(id="t1", name="execute_python_code", input={"code": "x = 1"}),
+                    ToolCall(id="t2", name="execute_python_code", input={"code": "print(x)"}),
+                ],
+                stop_reason="tool_use",
+                raw_content=[],
+            ),
+            LLMResponse(text="Done both", tool_calls=[], stop_reason="end", raw_content=[]),
+        ])
+        provider.format_tool_result = MagicMock(
+            side_effect=lambda tid, c: {"type": "tool_result", "tool_use_id": tid, "content": c}
+        )
+        agent = DataAnalystAgent(api_url="http://test", provider=provider)
+        agent.session_id = "s1"
+        agent._client = _mock_http_client()
+        events = [e async for e in agent.chat("do two things")]
+        tool_starts = [e for e in events if isinstance(e, ToolStart)]
+        tool_results = [e for e in events if isinstance(e, ToolResult)]
+        assert len(tool_starts) == 2
+        assert len(tool_results) == 2
+        assert tool_starts[0].code == "x = 1"
+        assert tool_starts[1].code == "print(x)"
+
+
+class TestChunkedUpload:
+    async def test_large_file_splits_into_chunks(self):
+        agent = DataAnalystAgent(api_url="http://test", provider=_mock_provider())
+        agent._client = _mock_http_client({
+            "success": True, "stdout": "chunk 1\n", "stderr": "",
+            "error": None, "outputs": [], "execution_count": 1,
+        })
+        agent.session_id = "s1"
+        content = b"x" * (5 * 1024 * 1024)
+        result = await agent.upload_file("big.csv", content)
+        assert "chunked" in result
+        post_calls = [c for c in agent._client.post.call_args_list
+                      if "execute" in str(c)]
+        assert len(post_calls) >= 2
+
+
+class TestSessionRecovery:
+    async def test_reconnect_on_connection_error(self):
+        import httpx
+        agent = DataAnalystAgent(api_url="http://test", provider=_mock_provider())
+        call_count = 0
+
+        async def mock_post(url, **kw):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise httpx.ConnectError("dead")
+            resp = MagicMock()
+            resp.json.return_value = {"session_id": "new-session"}
+            resp.raise_for_status = MagicMock()
+            return resp
+
+        agent._client = AsyncMock()
+        agent._client.post = mock_post
+        agent._client.aclose = AsyncMock()
+        agent.session_id = "old-session"
+
+        with patch("apps.data_analyst.agent.httpx.AsyncClient", return_value=agent._client):
+            result = await agent._execute_with_recovery("print(1)")
+
+        assert result["success"] is False
+        assert result["error"]["name"] == "SessionRestarted"
+
+    async def test_old_client_closed_on_recovery(self):
+        import httpx
+        agent = DataAnalystAgent(api_url="http://test", provider=_mock_provider())
+        old_client = AsyncMock()
+        old_client.post = AsyncMock(side_effect=httpx.ConnectError("dead"))
+        old_client.aclose = AsyncMock()
+        agent._client = old_client
+        agent.session_id = "old"
+
+        new_client = AsyncMock()
+        new_resp = MagicMock()
+        new_resp.json.return_value = {"session_id": "new"}
+        new_resp.raise_for_status = MagicMock()
+        new_client.post = AsyncMock(return_value=new_resp)
+
+        with patch("apps.data_analyst.agent.httpx.AsyncClient", return_value=new_client):
+            await agent._execute_with_recovery("print(1)")
+
+        old_client.aclose.assert_awaited_once()
+
+
+class TestProviderErrors:
+    async def test_format_result_with_stderr(self):
+        r = DataAnalystAgent._format_result({
+            "success": True, "stdout": "ok\n", "stderr": "warn\n",
+            "error": None, "outputs": [],
+        })
+        assert "ok\n" in r
+        assert "[stderr]: warn\n" in r
+
+    async def test_format_result_with_image_output(self):
+        r = DataAnalystAgent._format_result({
+            "success": True, "stdout": "", "stderr": "", "error": None,
+            "outputs": [{"mime_type": "image/png", "data_b64": "abc"}],
+        })
+        assert "(image)" in r
+
+    async def test_format_result_with_html_output(self):
+        r = DataAnalystAgent._format_result({
+            "success": True, "stdout": "", "stderr": "", "error": None,
+            "outputs": [{"mime_type": "text/html", "data": "<table>data</table>"}],
+        })
+        assert "<table>" in r
+
+    async def test_extract_images_filters_non_image(self):
+        images = DataAnalystAgent._extract_images({
+            "outputs": [
+                {"mime_type": "text/html", "data": "<p>text</p>"},
+                {"mime_type": "image/png", "data_b64": base64.b64encode(b"\x89PNG").decode()},
+            ]
+        })
+        assert len(images) == 1
+        assert images[0].mime_type == "image/png"
+
+
 class TestFormatResult:
     def test_success(self):
         r = DataAnalystAgent._format_result({"success": True, "stdout": "42\n", "stderr": "", "error": None, "outputs": []})
