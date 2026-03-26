@@ -93,6 +93,10 @@ echo "==> Installing guest agent"
 cp "$SCRIPT_DIR/fc_guest_agent.py" "$ROOTFS_DIR/usr/local/bin/fc-guest-agent"
 chmod +x "$ROOTFS_DIR/usr/local/bin/fc-guest-agent"
 
+echo "==> Installing Panel dispatcher"
+mkdir -p "$ROOTFS_DIR/opt/agent"
+cp "$SCRIPT_DIR/dispatcher.py" "$ROOTFS_DIR/opt/agent/dispatcher.py"
+
 echo "==> Installing init script"
 cp "$SCRIPT_DIR/init.sh" "$ROOTFS_DIR/init"
 chmod +x "$ROOTFS_DIR/init"

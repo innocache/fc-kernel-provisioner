@@ -44,18 +44,17 @@ def _start_execution_api():
     os.environ["POOL_SOCKET"] = "/dev/null"
 
     from execution_api.server import create_app, SessionManager
+    from unittest.mock import AsyncMock, patch
     import uvicorn
 
     mgr = SessionManager(
-        gateway_url=f"http://localhost:{_KG_PORT}",
+        gateway_url=fake_kg,
         default_timeout=30,
         max_sessions=50,
         session_ttl=600,
     )
-    mock_pool = AsyncMock()
-    mock_pool.launch_dashboard = AsyncMock(return_value={"status": "ok"})
-    mock_pool.stop_dashboard = AsyncMock(return_value={"status": "ok"})
-    app = create_app(session_manager=mgr, pool_client=mock_pool)
+    mgr._lookup_vm_id = AsyncMock(return_value="vm-fake-001")
+    app = create_app(session_manager=mgr)
 
     config = uvicorn.Config(app, host="localhost", port=_API_PORT, log_level="error")
     server = uvicorn.Server(config)

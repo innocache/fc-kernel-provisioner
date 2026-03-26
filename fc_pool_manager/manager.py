@@ -8,6 +8,7 @@ import shutil
 import time
 from typing import Any
 
+from .caddy_client import CaddyClient
 from .config import PoolConfig
 from .firecracker_api import FirecrackerAPI
 from .metrics import (
@@ -41,6 +42,7 @@ class PoolManager:
             vm_ip_start=config.vm_ip_start,
         )
         self._cid_alloc = CIDAllocator()
+        self._caddy = CaddyClient(admin_url=config.caddy_admin_url)
         self._boot_lock = asyncio.Lock()
         self._acquire_lock = asyncio.Lock()
         self._kernel_to_vm: dict[str, str] = {}
@@ -262,6 +264,11 @@ class PoolManager:
                     )
             except Exception as exc:
                 logger.warning("Failed to pre-warm kernel for %s: %s", vm.vm_id, exc)
+
+            try:
+                await self._caddy.add_route(vm.vm_id, f"{vm.ip}:5006")
+            except Exception as exc:
+                logger.warning("Failed to register Caddy route for %s: %s", vm.vm_id, exc)
 
             vm.transition_to(VMState.IDLE)
             boot_secs = asyncio.get_event_loop().time() - vm.created_at
@@ -508,7 +515,11 @@ class PoolManager:
             logger.warning("Failed to create golden snapshot: %s", exc)
 
     async def _destroy_vm(self, vm: VMInstance) -> None:
-        """Tear down a VM: kill jailer, delete TAP, remove jail dir."""
+        try:
+            await self._caddy.remove_route(vm.vm_id)
+        except Exception:
+            pass
+
         if vm.jailer_process and vm.jailer_process.returncode is None:
             vm.jailer_process.terminate()
             try:

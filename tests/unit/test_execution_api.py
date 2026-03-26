@@ -369,28 +369,25 @@ class TestSessionManagerEdgeCases:
 
 class TestSessionManagerDashboardState:
     @patch("execution_api.server.SandboxSession")
-    @patch("execution_api.server._lookup_vm_by_kernel")
-    async def test_create_populates_vm_info(self, mock_lookup, MockSession):
+    async def test_create_populates_vm_id(self, MockSession):
         session = AsyncMock()
         session._kernel_id = "kid-1"
         MockSession.return_value = session
-        mock_lookup.return_value = {"ip": "172.16.0.2", "vsock_path": "/tmp/v.sock"}
         mgr = SessionManager(gateway_url="http://gw:8888")
-        entry = await mgr.create()
-        assert entry.vm_ip == "172.16.0.2"
-        assert entry.vsock_path == "/tmp/v.sock"
+        with patch.object(mgr, "_lookup_vm_id", return_value="vm-abc"):
+            entry = await mgr.create()
+        assert entry.vm_id == "vm-abc"
         assert entry.active_dashboard is None
 
     @patch("execution_api.server.SandboxSession")
-    @patch("execution_api.server._lookup_vm_by_kernel", side_effect=RuntimeError("down"))
-    async def test_create_vm_lookup_failure_keeps_session_usable(self, _, MockSession):
+    async def test_create_vm_lookup_failure_keeps_session_usable(self, MockSession):
         session = AsyncMock()
         session._kernel_id = "kid-1"
         MockSession.return_value = session
         mgr = SessionManager(gateway_url="http://gw:8888")
-        entry = await mgr.create()
-        assert entry.vm_ip is None
-        assert entry.vsock_path is None
+        with patch.object(mgr, "_lookup_vm_id", side_effect=RuntimeError("down")):
+            entry = await mgr.create()
+        assert entry.vm_id is None
 
 
 from execution_api.server import _result_to_response, create_app
@@ -494,26 +491,16 @@ def mock_sandbox_session():
 
 
 @pytest.fixture
-def mock_pool_client():
-    pc = AsyncMock()
-    pc.launch_dashboard = AsyncMock(return_value={"status": "ok"})
-    pc.stop_dashboard = AsyncMock(return_value={"status": "ok"})
-    return pc
-
-
-@pytest.fixture
-async def client(mock_sandbox_session, mock_pool_client):
+async def client(mock_sandbox_session):
     with patch("execution_api.server.SandboxSession") as MockSession, \
-         patch("execution_api.server._lookup_vm_by_kernel", new_callable=AsyncMock) as mock_lookup, \
-         patch("execution_api.server.caddy.add_route", new_callable=AsyncMock), \
-         patch("execution_api.server.caddy.remove_route", new_callable=AsyncMock):
+         patch.object(SessionManager, "_lookup_vm_id", new_callable=AsyncMock) as mock_lookup:
         MockSession.return_value = mock_sandbox_session
-        mock_lookup.return_value = {"vm_id": "vm-test-1", "ip": "172.16.0.2", "vsock_path": "/tmp/v.sock"}
+        mock_lookup.return_value = "vm-test-1"
         mgr = SessionManager(
             gateway_url="http://test:8888", default_timeout=30,
             max_sessions=20, session_ttl=600,
         )
-        app = create_app(session_manager=mgr, pool_client=mock_pool_client)
+        app = create_app(session_manager=mgr)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
             transport=transport, base_url="http://test",
@@ -731,60 +718,56 @@ class TestEndpoints:
 
 class TestDashboardEndpoints:
     async def test_launch_dashboard_success(self, client):
-        c, _ = client
+        c, mock = client
+        mock.execute = AsyncMock(return_value=ExecutionResult(
+            success=True, stdout="dashboard deployed\n", stderr="", error=None, outputs=[], execution_count=1,
+        ))
         sid = (await c.post("/sessions")).json()["session_id"]
-        resp = await c.post(f"/sessions/{sid}/dashboard", json={"code": "import panel as pn"})
+        resp = await c.post(f"/sessions/{sid}/dashboard", json={"code": "app = 1"})
         assert resp.status_code == 200
         data = resp.json()
         assert data["session_id"] == sid
-        assert data["url"].startswith(f"/dash/{sid}/")
+        assert "/dash/" in data["url"]
+        assert "vm-test-1" in data["url"]
+        mock.execute.assert_awaited()
 
     async def test_launch_dashboard_session_not_found(self, client):
         c, _ = client
         resp = await c.post("/sessions/missing/dashboard", json={"code": "x"})
         assert resp.status_code == 404
 
-    async def test_launch_dashboard_no_vm_info(self, client):
+    async def test_launch_dashboard_no_vm_id(self, client):
         c, _ = client
         sid = (await c.post("/sessions")).json()["session_id"]
-        app_mgr = c._transport.app.state.session_manager
-        app_mgr.sessions[sid].vm_id = None
-        app_mgr.sessions[sid].vm_ip = None
+        mgr = c._transport.app.state.session_manager
+        mgr._sessions[sid].vm_id = None
         resp = await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
         assert resp.status_code == 503
 
-    async def test_launch_dashboard_pool_client_error(self, client, mock_pool_client):
-        c, _ = client
+    async def test_launch_dashboard_execute_error(self, client):
+        c, mock = client
+        mock.execute = AsyncMock(side_effect=RuntimeError("kernel dead"))
         sid = (await c.post("/sessions")).json()["session_id"]
-        mock_pool_client.launch_dashboard = AsyncMock(side_effect=RuntimeError("down"))
         resp = await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
         assert resp.status_code == 503
-
-    async def test_launch_dashboard_panel_start_error(self, client, mock_pool_client):
-        c, _ = client
-        sid = (await c.post("/sessions")).json()["session_id"]
-        mock_pool_client.launch_dashboard = AsyncMock(return_value={"status": "error", "message": "bad code"})
-        resp = await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
-        assert resp.status_code == 500
-
-    async def test_launch_dashboard_caddy_error_triggers_cleanup(self, client, mock_pool_client):
-        c, _ = client
-        sid = (await c.post("/sessions")).json()["session_id"]
-        mock_pool_client.stop_dashboard = AsyncMock(return_value={"status": "ok"})
-        with patch("execution_api.server.caddy.add_route", side_effect=RuntimeError("caddy down")):
-            resp = await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
-        assert resp.status_code == 503
-        mock_pool_client.stop_dashboard.assert_awaited_once()
 
     async def test_launch_dashboard_replaces_existing(self, client):
-        c, _ = client
+        c, mock = client
+        mock.execute = AsyncMock(return_value=ExecutionResult(
+            success=True, stdout="ok\n", stderr="", error=None, outputs=[], execution_count=1,
+        ))
         sid = (await c.post("/sessions")).json()["session_id"]
-        await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
-        resp = await c.post(f"/sessions/{sid}/dashboard", json={"code": "y"})
-        assert resp.status_code == 200
+        r1 = await c.post(f"/sessions/{sid}/dashboard", json={"code": "v1"})
+        r2 = await c.post(f"/sessions/{sid}/dashboard", json={"code": "v2"})
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        assert r1.json()["app_id"] != r2.json()["app_id"]
 
     async def test_stop_dashboard_success(self, client):
-        c, _ = client
+        c, mock = client
+        mock.execute = AsyncMock(return_value=ExecutionResult(
+            success=True, stdout="ok\n", stderr="", error=None, outputs=[], execution_count=1,
+        ))
         sid = (await c.post("/sessions")).json()["session_id"]
         await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
         resp = await c.delete(f"/sessions/{sid}/dashboard")
@@ -795,23 +778,12 @@ class TestDashboardEndpoints:
         resp = await c.delete("/sessions/missing/dashboard")
         assert resp.status_code == 404
 
-    async def test_stop_dashboard_no_active_dashboard_is_noop(self, client):
-        c, _ = client
-        sid = (await c.post("/sessions")).json()["session_id"]
-        resp = await c.delete(f"/sessions/{sid}/dashboard")
-        assert resp.status_code == 200
-
-    async def test_delete_session_stops_dashboard_and_removes_route(self, client, mock_pool_client):
-        c, _ = client
+    async def test_delete_session_clears_dashboard(self, client):
+        c, mock = client
+        mock.execute = AsyncMock(return_value=ExecutionResult(
+            success=True, stdout="ok\n", stderr="", error=None, outputs=[], execution_count=1,
+        ))
         sid = (await c.post("/sessions")).json()["session_id"]
         await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
-        mock_pool_client.stop_dashboard.reset_mock()
-        resp = await c.delete(f"/sessions/{sid}")
-        assert resp.status_code == 200
-        mock_pool_client.stop_dashboard.assert_awaited_once()
-
-    async def test_delete_session_without_dashboard_is_unchanged(self, client):
-        c, _ = client
-        sid = (await c.post("/sessions")).json()["session_id"]
         resp = await c.delete(f"/sessions/{sid}")
         assert resp.status_code == 200

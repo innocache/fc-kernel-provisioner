@@ -155,8 +155,12 @@ def start_kernel(ports: dict, key: str, ip: str) -> int:
     return kernel_proc.pid
 
 
+_DISPATCHER_PATH = "/opt/agent/dispatcher.py"
+_dispatcher_proc = None
+
+
 def pre_warm_kernel() -> dict:
-    global _kernel_key, _kernel_ports, kernel_proc
+    global _kernel_key, _kernel_ports, kernel_proc, _dispatcher_proc
 
     import secrets
 
@@ -166,7 +170,15 @@ def pre_warm_kernel() -> dict:
     ip = "0.0.0.0"
     pid = start_kernel(_kernel_ports, _kernel_key, ip)
 
-    return {"key": _kernel_key, "ports": _kernel_ports, "pid": pid}
+    if os.path.isfile(_DISPATCHER_PATH):
+        os.makedirs("/apps", exist_ok=True)
+        _dispatcher_proc = subprocess.Popen(
+            [sys.executable, _DISPATCHER_PATH],
+            stdout=open("/tmp/dispatcher.log", "w"),
+            stderr=subprocess.STDOUT,
+        )
+
+    return {"key": _kernel_key, "ports": _kernel_ports, "pid": pid, "panel_port": 5006}
 
 
 def get_kernel_info() -> dict:
