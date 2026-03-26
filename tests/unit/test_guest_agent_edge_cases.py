@@ -86,7 +86,6 @@ class TestHandleMessageEdgeCases:
                 "control_port": 5558,
                 "hb_port": 5559,
             },
-            "key": "abc",
         }
 
         with patch("subprocess.Popen", return_value=mock_proc), patch("time.sleep"):
@@ -102,15 +101,14 @@ class TestHandleMessageEdgeCases:
         mock_proc.pid = 100
         mock_proc.poll.return_value = None
 
-        msg = {"action": "start_kernel", "key": "abc"}
+        msg = {"action": "start_kernel"}
 
         with patch("subprocess.Popen", return_value=mock_proc), patch("time.sleep"):
             response = _decode(mod.handle_message(_encode(msg)))
 
         assert response["status"] == "ready"
 
-    def test_start_kernel_missing_key(self):
-        """Missing key should default to empty string."""
+    def test_start_kernel_without_key_field(self):
         mod = self._get_fresh_mod()
         mock_proc = MagicMock()
         mock_proc.pid = 200
@@ -132,7 +130,6 @@ class TestHandleMessageEdgeCases:
         msg = {
             "action": "start_kernel",
             "ports": {"shell_port": 5555},
-            "key": "abc",
             "ip": "172.16.0.2",
         }
 
@@ -161,7 +158,6 @@ class TestHandleMessageEdgeCases:
         msg = {
             "action": "restart_kernel",
             "ports": {"shell_port": 5555},
-            "key": "xyz",
         }
 
         with patch("subprocess.Popen", return_value=new_proc), patch("time.sleep"), \
@@ -183,7 +179,7 @@ class TestHandleMessageEdgeCases:
         new_proc.pid = 400
         new_proc.poll.return_value = None
 
-        msg = {"action": "restart_kernel", "ports": {}, "key": "abc"}
+        msg = {"action": "restart_kernel", "ports": {}}
 
         with patch("subprocess.Popen", return_value=new_proc), patch("time.sleep"):
             response = _decode(mod.handle_message(_encode(msg)))
@@ -287,17 +283,17 @@ class TestWriteConnectionFileEdgeCases:
         conn_file.write_text("old content")
 
         ports = {"shell_port": 5555}
-        mod.write_connection_file(str(conn_file), ports, "key1", ip="172.16.0.9")
+        mod.write_connection_file(str(conn_file), ports, ip="172.16.0.9")
 
         data = json.loads(conn_file.read_text())
-        assert data["key"] == "key1"
+        assert data["key"] == ""
         assert data["ip"] == "0.0.0.0"
         assert data["shell_port"] == 5555
 
     def test_empty_key_is_valid(self, tmp_path):
         mod = load_agent_module()
         conn_file = tmp_path / "kernel.json"
-        mod.write_connection_file(str(conn_file), {}, "", ip="172.16.0.2")
+        mod.write_connection_file(str(conn_file), {}, ip="172.16.0.2")
         data = json.loads(conn_file.read_text())
         assert data["key"] == ""
 
@@ -306,12 +302,11 @@ class TestWriteConnectionFileEdgeCases:
         msg = _encode({
             "action": "start_kernel",
             "ports": {"shell_port": 5555},
-            "key": "abc123",
             "ip": "172.16.0.2",
         })
 
         with patch.object(mod, "start_kernel", return_value=12345) as mock_start:
             response = _decode(mod.handle_message(msg))
 
-        mock_start.assert_called_once_with({"shell_port": 5555}, "abc123", "172.16.0.2")
+        mock_start.assert_called_once_with({"shell_port": 5555}, "172.16.0.2")
         assert response["status"] == "ready"

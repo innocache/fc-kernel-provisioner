@@ -13,7 +13,6 @@ def _make_warm_vm(vm_id="vm-warm-1"):
         "id": vm_id,
         "ip": "172.16.0.10",
         "vsock_path": "/tmp/v.sock",
-        "kernel_key": "abcdef1234567890" * 4,
         "kernel_ports": {
             "shell_port": 5555,
             "iopub_port": 5556,
@@ -38,7 +37,6 @@ def _make_prov(**overrides):
     prov.vm_id = overrides.get("vm_id")
     prov.vm_ip = overrides.get("vm_ip")
     prov.vsock_path = overrides.get("vsock_path")
-    prov.kernel_key = overrides.get("kernel_key")
     prov.kernel_ports = overrides.get("kernel_ports")
     prov.process = None
     prov.pool_client = overrides.get("pool_client")
@@ -85,10 +83,9 @@ class TestWarmPoolPreLaunch:
 
         assert prov.vm_id == "vm-warm-1"
         assert prov.vm_ip == "172.16.0.10"
-        assert prov.kernel_key == vm["kernel_key"]
         assert prov.connection_info["ip"] == "172.16.0.10"
         assert prov.connection_info["shell_port"] == 5555
-        assert prov.parent.session.key == vm["kernel_key"].encode("utf-8")
+        assert prov.parent.session.key == b""
 
     async def test_fallback_on_empty_pool(self):
         prov = _make_prov()
@@ -189,7 +186,6 @@ class TestWarmPoolCleanup:
         await prov.cleanup(restart=False)
         prov.pool_client.release.assert_awaited_once_with("vm-cleanup", destroy=True)
         assert prov.vm_id is None
-        assert prov.kernel_key is None
 
     async def test_cleanup_restart_delegates_to_super(self):
         prov = _make_prov(vm_id="vm-restart", vsock_path="/tmp/v.sock", pool_client=AsyncMock())

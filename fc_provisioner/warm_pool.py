@@ -3,7 +3,7 @@ import logging
 from typing import Any, ClassVar, Optional
 
 from .pool_client import PoolClient
-from .provisioner import FirecrackerProvisioner
+from .provisioner import FirecrackerProvisioner, KernelProvisionerBase
 
 logger = logging.getLogger(__name__)
 
@@ -41,23 +41,29 @@ class WarmPoolProvisioner(FirecrackerProvisioner):
     @classmethod
     async def _replenish_loop(cls) -> None:
         while True:
-            while cls._warm_pool.qsize() < cls._pool_target:
+            warm_pool = cls._warm_pool
+            pool_client = cls._pool_client
+            if warm_pool is None or pool_client is None:
+                await asyncio.sleep(_REPLENISH_POLL_INTERVAL)
+                continue
+
+            while warm_pool.qsize() < cls._pool_target:
                 try:
-                    vm = await cls._pool_client.acquire(
+                    vm = await pool_client.acquire(
                         vcpu=cls._vcpu, mem_mib=cls._mem_mib,
                     )
-                    if vm.get("kernel_key") and vm.get("kernel_ports"):
-                        await cls._warm_pool.put(vm)
+                    if vm.get("kernel_ports"):
+                        await warm_pool.put(vm)
                         logger.info(
                             "Warm pool: added %s (pool=%d/%d)",
-                            vm["id"], cls._warm_pool.qsize(), cls._pool_target,
+                            vm["id"], warm_pool.qsize(), cls._pool_target,
                         )
                     else:
                         logger.warning(
                             "Warm pool: VM %s has no pre-warmed kernel, releasing",
                             vm["id"],
                         )
-                        await cls._pool_client.release(vm["id"], destroy=True)
+                        await pool_client.release(vm["id"], destroy=True)
                 except Exception as exc:
                     logger.warning("Warm pool replenish failed: %s", exc)
                     await asyncio.sleep(_REPLENISH_RETRY_DELAY)
@@ -91,26 +97,24 @@ class WarmPoolProvisioner(FirecrackerProvisioner):
         if vm is None:
             logger.warning("Warm pool empty or all stale, falling back to cold acquire")
             return await super().pre_launch(**kwargs)
+        assert self._warm_pool is not None
         logger.info("Warm pool: serving %s to kernel (pool=%d)", vm["id"], self._warm_pool.qsize())
 
         self.pool_client = self._pool_client
         self.vm_id = vm["id"]
         self.vm_ip = vm["ip"]
         self.vsock_path = vm["vsock_path"]
-        self.kernel_key = vm.get("kernel_key")
         self.kernel_ports = vm.get("kernel_ports")
 
-        
-
         kwargs["cmd"] = []
-        from jupyter_client.provisioning import KernelProvisionerBase
+        assert self._pool_client is not None
         result = await KernelProvisionerBase.pre_launch(self, **kwargs)
 
         self.connection_info["ip"] = self.vm_ip
         self.connection_info["transport"] = "tcp"
+        self.connection_info["key"] = b""
         if hasattr(self, "parent") and hasattr(self.parent, "session"):
             self.parent.session.key = b""
-            self.connection_info["key"] = b""
             self.connection_info["signature_scheme"] = "hmac-sha256"
 
         if self.kernel_ports:
@@ -131,7 +135,6 @@ class WarmPoolProvisioner(FirecrackerProvisioner):
             self.vm_id = None
             self.vm_ip = None
             self.vsock_path = None
-            self.kernel_key = None
             self.kernel_ports = None
             self.process = None
         else:

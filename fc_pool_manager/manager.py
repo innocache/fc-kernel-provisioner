@@ -143,8 +143,7 @@ class PoolManager:
                         "ip": vm.ip,
                         "vsock_path": vm.vsock_path,
                     }
-                    if vm.kernel_key and vm.kernel_ports:
-                        result["kernel_key"] = vm.kernel_key
+                    if vm.kernel_ports:
                         result["kernel_ports"] = vm.kernel_ports
                     return result
 
@@ -160,8 +159,7 @@ class PoolManager:
                 "ip": vm.ip,
                 "vsock_path": vm.vsock_path,
             }
-            if vm.kernel_key and vm.kernel_ports:
-                result["kernel_key"] = vm.kernel_key
+            if vm.kernel_ports:
                 result["kernel_ports"] = vm.kernel_ports
             return result
 
@@ -249,27 +247,19 @@ class PoolManager:
                 await self._restore_from_snapshot(vm)
             else:
                 await self._full_boot(vm)
-
-            await self._wait_for_guest_agent(vm)
-
-            from .vsock import vsock_request
-            try:
-                resp = await vsock_request(
-                    vm.vsock_path,
-                    {"action": "pre_warm_kernel"},
-                    timeout=120,
-                )
-                if resp.get("status") == "ok":
-                    vm.kernel_key = resp["key"]
-                    vm.kernel_ports = resp["ports"]
-                    key_preview = vm.kernel_key[:8] if vm.kernel_key else ""
-                    logger.info(
-                        "Pre-warmed kernel for %s (key=%s...)",
-                        vm.vm_id,
-                        key_preview,
+                await self._wait_for_guest_agent(vm)
+                from .vsock import vsock_request
+                try:
+                    resp = await vsock_request(
+                        vm.vsock_path,
+                        {"action": "pre_warm_kernel"},
+                        timeout=120,
                     )
-            except Exception as exc:
-                logger.warning("Failed to pre-warm kernel for %s: %s", vm.vm_id, exc)
+                    if resp.get("status") == "ok":
+                        vm.kernel_ports = resp["ports"]
+                        logger.info("Pre-warmed kernel for %s", vm.vm_id)
+                except Exception as exc:
+                    logger.warning("Failed to pre-warm kernel for %s: %s", vm.vm_id, exc)
 
             vm.transition_to(VMState.IDLE)
             boot_secs = asyncio.get_event_loop().time() - vm.created_at
@@ -394,7 +384,6 @@ class PoolManager:
                 timeout=10,
             )
             if resp.get("status") == "ok" and resp.get("running"):
-                vm.kernel_key = resp["key"]
                 vm.kernel_ports = resp["ports"]
         except Exception as exc:
             logger.warning("Failed to get kernel info for %s: %s", vm.vm_id, exc)
@@ -484,8 +473,13 @@ class PoolManager:
                 )
                 if resp.get("status") == "ok":
                     logger.info("Pre-warmed kernel in ephemeral VM %s", vm.vm_id)
-            except Exception:
-                pass
+                else:
+                    logger.warning(
+                        "pre_warm_kernel returned non-ok for ephemeral %s: %s",
+                        vm.vm_id, resp.get("message", resp.get("status")),
+                    )
+            except Exception as exc:
+                logger.warning("pre_warm_kernel failed for ephemeral %s: %s", vm.vm_id, exc)
 
             return vm
         except Exception:

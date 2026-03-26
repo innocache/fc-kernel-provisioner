@@ -72,7 +72,6 @@ class VMInstance:
     vsock_path: str
     state: VMState = field(default=VMState.BOOTING)
     jailer_process: Optional[Process] = field(default=None, repr=False)
-    kernel_key: Optional[str] = field(default=None)
     kernel_ports: Optional[dict] = field(default=None, repr=False)
     created_at: float = field(default_factory=time.monotonic)
     assigned_at: Optional[float] = field(default=None)

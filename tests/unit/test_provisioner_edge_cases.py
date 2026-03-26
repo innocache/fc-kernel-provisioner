@@ -29,7 +29,7 @@ def make_provisioner(**overrides):
     p.process = None
     p.pool_client = None
     p.connection_info = {
-        "key": "test-hmac-key",
+        "key": b"",
         "ip": "127.0.0.1",
         "transport": "tcp",
     }
@@ -112,21 +112,19 @@ class TestProvisionerLaunchEdgeCases:
         assert result["hb_port"] == 5559
 
     @patch("fc_provisioner.provisioner.vsock_request")
-    async def test_launch_kernel_decodes_bytes_session_key(self, mock_vsock):
-        """Byte session keys should be decoded to text for Jupyter connection files."""
+    async def test_launch_kernel_sends_empty_key(self, mock_vsock):
         p = make_provisioner(
             vm_id="vm-test",
             vm_ip="172.16.0.99",
             vsock_path="/tmp/v.sock",
             pool_client=MagicMock(),
         )
-        p.connection_info["key"] = b"test-key"
         mock_vsock.return_value = {"status": "ready", "pid": 42}
 
         await p.launch_kernel(cmd=[])
 
         msg = mock_vsock.call_args[0][1]
-        assert msg["key"] == "test-key"
+        assert msg["key"] == ""
 
 
 class TestProvisionerCleanupEdgeCases:
@@ -161,7 +159,7 @@ class TestProvisionerCleanupEdgeCases:
 
         msg = mock_vsock.call_args[0][1]
         assert msg["action"] == "restart_kernel"
-        assert msg["key"] == "test-hmac-key"
+        assert msg["key"] == ""
         assert p.process is not None  # Process should be reset after restart
 
     async def test_cleanup_restart_without_vsock_path_falls_through(self):
