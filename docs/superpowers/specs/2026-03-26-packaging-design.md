@@ -7,10 +7,13 @@ Three independently deployable applications from the fc-kernel-provisioner monor
 | App | Package | Runs On | Connects To |
 |-----|---------|---------|------------|
 | **Data Analyst Agent** | Docker image `fc-data-analyst` | Anywhere | Execution API (:8000) |
-| **Execution API** | Docker image `fc-execution-api` | Anywhere | KG (:8888), Caddy (:2019) |
-| **Infrastructure** | Bare metal via `deploy.sh` | Linux KVM host | Firecracker VMs, network bridge |
+| **Execution API** | Docker image `fc-execution-api` | Anywhere | KG (:8888) only |
+| **Infrastructure** | Bare metal via `deploy.sh` | Linux KVM host | Firecracker VMs, Caddy, network bridge |
 
-Key design decision: **Panel auto-starts at VM boot** (captured in golden snapshot). This eliminates the Execution API → Pool Manager dependency. Dashboard launch is just a Caddy route registration (~5ms) — no vsock, no socket mount.
+Key design decisions:
+- **Panel dispatcher** auto-starts at VM boot (captured in golden snapshot), dynamically loads dashboard code by mtime
+- **Caddy routes registered at VM boot** by Pool Manager (not Execution API)
+- **Execution API is a pure KG client** — zero infrastructure dependencies, one env var Docker image
 
 ## 2. Architecture
 
@@ -21,29 +24,45 @@ Key design decision: **Panel auto-starts at VM boot** (captured in golden snapsh
 │                      │     │                      │
 │ Chainlit :8501       │────►│ FastAPI :8000         │
 │ LLM Provider         │HTTP │ SandboxSession       │
-│                      │     │ CaddyClient          │
-└──────────────────────┘     └───┬───────────┬──────┘
-                                 │WS         │HTTP
-                                 ▼           ▼
-                    ┌────────────────┐ ┌──────────────┐
-                    │ KG :8888       │ │Caddy :8080   │
-                    │ (bare metal)   │ │(bare metal)  │
-                    │ WarmPool       │ │              │
-                    │ Provisioner    │ │ /dash/{sid}/ │
-                    └───────┬───────┘ │  → VM:5006   │
-                            │         └──────────────┘
-                    ┌───────▼───────┐       ↑
-                    │Pool Manager   │       │TCP
-                    │(bare metal)   │       │
-                    │               │ ┌─────┴──────┐
-                    └───────┬───────┘ │ Panel:5006 │
-                            │vsock    │ (auto-start)│
-                    ┌───────▼─────────┴────────────┐
-                    │ Firecracker VM                 │
-                    │ ipykernel:5555 + Panel:5006   │
-                    │ (both in golden snapshot)      │
-                    └───────────────────────────────┘
+│                      │     │ (KG client only)     │
+└──────────────────────┘     └───────────┬──────────┘
+                                         │ HTTP + WebSocket
+                                         ▼
+                    ┌──────────────────────────────────────┐
+                    │ Infrastructure (bare metal)           │
+                    │                                      │
+                    │  KG :8888 ←──────── WarmPool         │
+                    │    │                Provisioner       │
+                    │    │                    │             │
+                    │  Pool Manager ──────────┘             │
+                    │    │  (boot VM → register Caddy)     │
+                    │    │                                  │
+                    │  Caddy :8080                          │
+                    │    │  /dash/{vm_id}/* → VM:5006      │
+                    │    │                                  │
+                    │  Firecracker VMs                      │
+                    │    ├── ipykernel :5555 (pre-warmed)  │
+                    │    └── dispatcher.py → Panel :5006   │
+                    │        (auto-reload from /apps/)      │
+                    └──────────────────────────────────────┘
 ```
+
+### Why the Execution API has zero infrastructure dependencies
+
+```
+VM boot (Pool Manager):
+  restore snapshot → Panel dispatcher already running
+  → register Caddy route: /dash/{vm_id}/* → vm_ip:5006
+
+Dashboard create (Execution API):
+  session.execute() writes .py to /apps/ → dispatcher auto-loads
+  return URL: /dash/{vm_id}/app  (route already exists)
+
+Session delete (Pool Manager via KG provisioner):
+  destroy VM → Caddy route removed → /apps/ gone with VM
+```
+
+The Execution API never touches Caddy, Pool Manager, or vsock. It only talks to KG.
 
 ### Why no Pool Manager connection from Execution API
 
@@ -97,15 +116,13 @@ CMD ["uvicorn", "execution_api.server:create_app", "--factory", "--host", "0.0.0
 | Destination | Protocol | Default | Config |
 |------------|----------|---------|--------|
 | Kernel Gateway | HTTP + WebSocket | `host.docker.internal:8888` | `GATEWAY_URL` |
-| Caddy admin | HTTP | `host.docker.internal:2019` | `CADDY_ADMIN_URL` |
 
-No volume mounts needed — all connections are standard TCP/HTTP.
+One dependency. No volume mounts. No Caddy. No Pool Manager.
 
 ```bash
 docker run -d \
   -p 8000:8000 \
   -e GATEWAY_URL=http://host.docker.internal:8888 \
-  -e CADDY_ADMIN_URL=http://host.docker.internal:2019 \
   fc-execution-api
 ```
 
@@ -163,8 +180,6 @@ services:
       - "8000:8000"
     environment:
       - GATEWAY_URL=http://host.docker.internal:8888
-      - CADDY_ADMIN_URL=http://host.docker.internal:2019
-      - DASHBOARD_ALLOWED_ORIGINS=localhost:8080,localhost:8501
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -212,104 +227,273 @@ Browser (:8501) → data-analyst container → execution-api container (:8000)
 
 The `data-analyst` container talks to `execution-api` by service name (Docker DNS). The `execution-api` container talks to the KG via `host.docker.internal` (host network).
 
-## 6. Auto-Start Panel Design
+## 6. Panel Dispatcher Design
 
-### What changes in the VM boot
+Panel auto-starts at VM boot with a **dispatcher app** that dynamically loads dashboard code written by the kernel. Caddy routes are registered by the Pool Manager at VM boot time. This eliminates ALL infrastructure dependencies from the Execution API.
 
-The guest agent's `pre_warm_kernel()` is extended to also start Panel:
+### Dashboard contract
+
+LLM-generated dashboard code must export an `app` variable (not use `.servable()`):
+
+```python
+# CORRECT — dispatcher loads this
+import panel as pn
+import pandas as pd
+
+df = pd.read_parquet("/data/sales.parquet")
+col = pn.widgets.Select(options=list(df.columns))
+plot = pn.bind(lambda c: df[c].plot.hist(), col)
+app = pn.Column(col, plot)  # ← must export 'app'
+```
+
+```python
+# WRONG — .servable() doesn't work with dispatcher's exec_module
+pn.Column(col, plot).servable()  # ← dispatcher can't capture this
+```
+
+### How it works
+
+```
+VM boot:
+  Guest agent starts dispatcher.py → Panel listening on :5006
+  (Captured in golden snapshot — zero cost on restore)
+
+User: "Create a revenue dashboard"
+  LLM → session.execute():
+    1. Writes /apps/dash_abc.py with Panel code
+    2. print("dashboard ready")
+  Execution API → caddy.add_route(sid, vm_ip:5006)
+  Execution API → return {url: "/dash/{sid}/app"}
+  Browser → Caddy → VM:5006/app → dispatcher loads dash_abc.py → renders
+
+User: "Add a date filter"
+  LLM → session.execute():
+    1. Writes /apps/dash_def.py (newer mtime)
+  Browser refreshes → dispatcher detects newer file → reloads → instant update
+```
+
+### dispatcher.py (installed at /opt/agent/dispatcher.py in rootfs)
+
+```python
+import importlib.util
+import os
+
+import panel as pn
+
+_current_mtime = 0
+_APP_DIR = "/apps"
+
+
+def get_dashboard():
+    """Called per-session by Panel. Returns a fresh app object each time."""
+    global _current_mtime
+
+    try:
+        apps = [f for f in os.listdir(_APP_DIR)
+                if f.startswith("dash_") and f.endswith(".py")]
+    except FileNotFoundError:
+        return pn.pane.Markdown("# No dashboard yet\nAsk the assistant to create one.")
+
+    if not apps:
+        return pn.pane.Markdown("# No dashboard yet\nAsk the assistant to create one.")
+
+    apps.sort(key=lambda f: os.path.getmtime(os.path.join(_APP_DIR, f)), reverse=True)
+    latest = os.path.join(_APP_DIR, apps[0])
+    mtime = os.path.getmtime(latest)
+
+    try:
+        spec = importlib.util.spec_from_file_location("dashboard", latest)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except Exception as e:
+        return pn.pane.Markdown(
+            f"## Dashboard Error\n\n```\n{type(e).__name__}: {e}\n```\n\n"
+            "Ask the assistant to fix the code."
+        )
+
+    app = getattr(mod, "app", None)
+    if app is None:
+        return pn.pane.Markdown(
+            "## Dashboard Error\n\n"
+            "Dashboard code must export an `app` variable.\n\n"
+            "Example: `app = pn.Column(widget, plot)`"
+        )
+
+    return app
+
+
+pn.serve(
+    {"app": get_dashboard},
+    port=5006,
+    address="0.0.0.0",
+    allow_websocket_origin=["*"],
+    show=False,
+)
+```
+
+Key design choices:
+- **Fresh module per request** — no global `_current_mod`, avoids shared widget state between sessions
+- **Factory pattern** — `get_dashboard()` returns a new app each time, safe for concurrent sessions
+- **Error display** — bad code shows error in iframe, not crash
+- **Missing `app` export** — clear message telling the LLM what to fix
+
+### Guest agent changes
+
+`pre_warm_kernel()` starts both kernel and dispatcher:
 
 ```python
 def pre_warm_kernel() -> dict:
     # Start ipykernel (existing)
     _kernel_key = secrets.token_hex(32)
-    _kernel_ports = dict(_DEFAULT_PORTS)
-    pid = start_kernel(_kernel_ports, _kernel_key, "0.0.0.0")
-    
-    # Start Panel (new)
+    pid = start_kernel(_DEFAULT_PORTS, _kernel_key, "0.0.0.0")
+
+    # Start dispatcher (new)
+    os.makedirs("/apps", exist_ok=True)
     subprocess.Popen([
-        sys.executable, "-m", "panel", "serve",
-        "--port", "5006", "--address", "0.0.0.0",
-        "--allow-websocket-origin", "*",
-        "--prefix", "/dash/placeholder",
-    ])
-    
-    return {"key": _kernel_key, "ports": _kernel_ports, "pid": pid, "panel_port": 5006}
+        sys.executable, "/opt/agent/dispatcher.py",
+    ], stdout=open("/tmp/panel.log", "w"), stderr=subprocess.STDOUT)
+
+    return {"key": _kernel_key, "ports": _DEFAULT_PORTS, "pid": pid, "panel_port": 5006}
 ```
 
-### Golden snapshot captures both
+### Golden snapshot captures both processes
 
 ```
-Boot fresh VM → guest agent → start kernel + start Panel → both running
+Boot fresh VM → guest agent → start kernel + start dispatcher
+  → both running, both listening on ports
   → pause → snapshot/create → golden snapshot includes:
-    - ipykernel process (warm, imports loaded)
-    - Panel process (warm, Bokeh loaded)
-    - Both listening on their ports
+    - ipykernel (warm, imports loaded)
+    - Panel dispatcher (warm, Bokeh loaded, listening on :5006)
 
-Restore from snapshot → VM resumes → both processes alive → ready
+Restore from snapshot → VM resumes → both alive → ready
 ```
+
+### What changes in Pool Manager
+
+`_boot_vm()` registers Caddy route after VM is ready:
+```python
+# After network reconfig + guest agent ready:
+await self._caddy.add_route(vm.vm_id, f"{vm.ip}:5006")
+```
+
+`_destroy_vm()` removes Caddy route before teardown:
+```python
+await self._caddy.remove_route(vm.vm_id)
+```
+
+The Pool Manager needs a `CaddyClient` instance (same class as currently in execution_api — move to shared location or duplicate).
 
 ### What changes in Execution API
 
-Dashboard endpoint becomes HTTP-only (no vsock):
+Dashboard endpoint writes code via `session.execute()` and returns the URL. No Caddy. No Pool Manager. No vsock.
 
 ```python
 @app.post("/sessions/{session_id}/dashboard")
 async def launch_dashboard(session_id, req: DashboardRequest):
     entry = session_manager.get(session_id)
-    
-    # Panel is already running on vm_ip:5006
-    # Just register Caddy route with the dashboard code path
+
+    # Atomic write: temp file + os.replace
     app_id = uuid.uuid4().hex[:12]
-    await caddy.add_route(session_id, f"{entry.vm_ip}:5006")
-    
+    escaped = req.code.replace("\\", "\\\\").replace("'''", "\\'\\'\\''")
+    await entry.session.execute(
+        "import os, tempfile\n"
+        "os.makedirs('/apps', exist_ok=True)\n"
+        f"code = '''{escaped}'''\n"
+        "tmp = tempfile.mktemp(dir='/apps', suffix='.py')\n"
+        "with open(tmp, 'w') as f: f.write(code)\n"
+        f"os.replace(tmp, '/apps/dash_{app_id}.py')\n"
+        "print('dashboard deployed')"
+    )
+
+    # URL uses vm_id — route was registered at VM boot by Pool Manager
     return DashboardResponse(
-        url=f"/dash/{session_id}/dash_{app_id}",
+        url=f"/dash/{entry.vm_id}/app",
         session_id=session_id,
         app_id=app_id,
     )
+
+@app.delete("/sessions/{session_id}/dashboard")
+async def stop_dashboard(session_id):
+    entry = session_manager.get(session_id)
+    # Best-effort file cleanup (VM destroy will clean anyway)
+    try:
+        await entry.session.execute(
+            "import glob, os\n"
+            "for f in glob.glob('/apps/dash_*.py'): os.remove(f)"
+        )
+    except Exception:
+        pass
+    entry.active_dashboard = None
+    return DeleteResponse()
 ```
 
 ### What gets removed from Execution API
 
-- `pool_client` import and usage
-- `_pool_client` module-level variable
-- `POOL_SOCKET` env var
-- All `pool_client.launch_dashboard()` / `pool_client.stop_dashboard()` calls
-- Pool Manager vsock proxy endpoints (can remain in pool manager but unused by API)
+- `pool_client` import and usage — **removed**
+- `_pool_client` module-level variable — **removed**
+- `POOL_SOCKET` env var — **removed**
+- `CADDY_ADMIN_URL` env var — **removed**
+- `CaddyClient` import — **removed** (moved to Pool Manager)
+- `_lookup_vm_by_kernel()` — **removed** (vm_id from provisioner acquire response)
+- All vsock calls for dashboards — **removed**
 
-### Panel prefix handling
+### Caddy route configuration
 
-The golden snapshot starts Panel with `--prefix /dash/placeholder`. On dashboard launch, the Caddy route maps `/dash/{session_id}/*` to the VM. Panel doesn't need the session-specific prefix at startup — Caddy handles the path rewriting.
-
-For dashboard code deployment: the `POST /dashboard` endpoint sends the code to the VM via the **Execution API's existing code execution path** (not vsock):
+Pool Manager registers routes with path stripping so Panel receives clean paths:
 
 ```python
-# Execute the dashboard code in the kernel, which writes it to Panel's watched directory
-code = f'''
-import os
-os.makedirs("/apps", exist_ok=True)
-with open("/apps/dash_{app_id}.py", "w") as f:
-    f.write("""{req.code}""")
-print("dashboard deployed")
-'''
-await entry.session.execute(code)
+# In CaddyClient.add_route():
+route = {
+    "@id": f"dash-{vm_id}",
+    "match": [{"path": [f"/dash/{vm_id}/*"]}],
+    "handle": [
+        {"handler": "rewrite", "strip_path_prefix": f"/dash/{vm_id}"},
+        {"handler": "reverse_proxy", "upstreams": [{"dial": upstream}]},
+    ],
+}
 ```
 
-This uses the same `SandboxSession.execute()` path as code execution — no new connections needed.
+Browser requests `/dash/vm-12345/app` → Caddy strips `/dash/vm-12345` → Panel receives `/app` → dispatcher serves the dashboard.
+
+### Dashboard iteration UX
+
+| Action | Latency | What happens |
+|--------|---------|-------------|
+| First dashboard | ~50ms | Write .py + register Caddy route |
+| Modify dashboard | ~50ms | Write new .py (dispatcher auto-reloads on next request) |
+| Replace dashboard | ~50ms | Write newer .py (dispatcher picks newest by mtime) |
+| Delete dashboard | ~20ms | Remove Caddy route + clean /apps/ |
+
+No Panel restart for any iteration. The dispatcher reloads automatically.
+
+### Error handling
+
+Bad dashboard code → dispatcher catches the exception → shows error in iframe:
+
+```
+## Dashboard Error
+
+```
+NameError: name 'df' is not defined
+```
+
+Ask the assistant to fix the code.
+```
+
+The user tells the LLM "fix the dashboard error", LLM generates corrected code, writes new .py, dispatcher reloads.
 
 ### Memory overhead
 
-| Config | Per-VM Memory | Pool of 5 | Pool of 30 |
-|--------|-------------|-----------|-----------|
-| Kernel only | ~200MB | ~1GB | ~6GB |
-| Kernel + Panel | ~350MB | ~1.75GB | ~10.5GB |
-| Delta | +150MB | +750MB | +4.5GB |
+| Config | Per-VM Memory | Recommendation |
+|--------|-------------|---------------|
+| Kernel only | ~200MB | 512MB VM |
+| Kernel + Panel dispatcher | ~350MB | 768MB minimum, **1GB for pandas workloads** |
 
 Configurable via `fc-pool.yaml`:
 ```yaml
 pool:
-  auto_start_panel: true    # false to disable
-  vm_mem_mib: 768           # increase from 512 for Panel
+  auto_start_panel: true    # false to skip dispatcher
+  vm_mem_mib: 1024          # 1GB for data analysis with dashboards
 ```
 
 ## 7. Infrastructure (App 3) — No Docker
@@ -395,12 +579,9 @@ docker push registry.example.com/fc-execution-api:v1.0.0
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GATEWAY_URL` | `http://localhost:8888` | Kernel Gateway endpoint |
-| `CADDY_ADMIN_URL` | `http://localhost:2019` | Caddy admin API |
 | `PORT` | `8000` | API listen port |
 | `SESSION_TTL` | `600` | Session idle timeout (seconds) |
 | `MAX_SESSIONS` | `20` | Maximum concurrent sessions |
-| `DASHBOARD_PORT` | `5006` | Panel port inside VMs |
-| `DASHBOARD_ALLOWED_ORIGINS` | `localhost:8080,127.0.0.1:8080` | WebSocket origins for Panel |
 
 ### fc-data-analyst
 
