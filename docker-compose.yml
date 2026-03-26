@@ -1,0 +1,28 @@
+version: "3.8"
+
+services:
+  execution-api:
+    build:
+      context: .
+      dockerfile: execution_api/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - GATEWAY_URL=http://host.docker.internal:8888
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  data-analyst:
+    build:
+      context: .
+      dockerfile: apps/data_analyst/Dockerfile
+    ports:
+      - "8501:8501"
+    environment:
+      - EXECUTION_API_URL=http://execution-api:8000
+      - LLM_PROVIDER=${LLM_PROVIDER:-anthropic}
+      - LLM_MODEL=${LLM_MODEL:-claude-sonnet-4-20250514}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    depends_on:
+      - execution-api
