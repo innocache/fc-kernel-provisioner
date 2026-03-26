@@ -12,6 +12,7 @@ dependencies = [
     "aiohttp>=3.9",
     "pyyaml>=6.0",
     "fastapi>=0.115",
+    "python-multipart>=0.0.9",
     "uvicorn>=0.34",
     "prometheus_client>=0.20",
 ]

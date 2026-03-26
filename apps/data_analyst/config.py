@@ -7,7 +7,6 @@ LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "anthropic")
 LLM_MODEL = os.environ.get("LLM_MODEL", "claude-sonnet-4-20250514")
 
 UPLOAD_MAX_BYTES = 50 * 1024 * 1024
-UPLOAD_CHUNK_SIZE = 4 * 1024 * 1024
 DOWNLOAD_MAX_BYTES = 10 * 1024 * 1024
 
 MAX_HISTORY_TOKENS = 80_000
@@ -16,7 +15,7 @@ TRUNCATED_OUTPUT_CHARS = 200
 
 
 def sanitize_filename(name: str) -> str:
-    return re.sub(r"[^\w.\-]", "_", name)
+    return re.sub(r"[^a-zA-Z0-9_.\-]", "_", name)
 
 
 SYSTEM_PROMPT = """You are a data analytics assistant with access to a sandboxed Python environment.

@@ -13,6 +13,9 @@ from execution_api.models import (
     ErrorResponse,
     ExecuteRequest,
     ExecuteResponse,
+    FileInfo,
+    FileListResponse,
+    FileUploadResponse,
     OneShotRequest,
     OutputItem,
     SessionInfo,
@@ -131,6 +134,23 @@ class TestModels:
     def test_error_response(self):
         resp = ErrorResponse(error="session not found")
         assert resp.error == "session not found"
+
+    def test_file_upload_response_model(self):
+        resp = FileUploadResponse(path="/data/test.csv", filename="test.csv", size=123)
+        data = resp.model_dump()
+        assert data["path"] == "/data/test.csv"
+        assert data["filename"] == "test.csv"
+        assert data["size"] == 123
+
+    def test_file_list_response_model(self):
+        resp = FileListResponse(
+            files=[FileInfo(filename="a.csv", path="/data/a.csv", size=10)],
+        )
+        data = resp.model_dump()
+        assert len(data["files"]) == 1
+        assert data["files"][0]["filename"] == "a.csv"
+        assert data["files"][0]["path"] == "/data/a.csv"
+        assert data["files"][0]["size"] == 10
 
     def test_dashboard_request(self):
         from execution_api.models import DashboardRequest
@@ -773,3 +793,217 @@ class TestDashboardEndpoints:
         await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
         resp = await c.delete(f"/sessions/{sid}")
         assert resp.status_code == 200
+
+
+class TestFileEndpoints:
+    async def test_upload_file_success(self, client, monkeypatch):
+        c, mock = client
+        mock.execute = AsyncMock(return_value=ExecutionResult(
+            success=True, stdout="", stderr="", error=None, outputs=[], execution_count=1,
+        ))
+        sid = (await c.post("/sessions")).json()["session_id"]
+        monkeypatch.setattr("execution_api.server.UPLOAD_CHUNK_SIZE", 2)
+
+        resp = await c.post(
+            f"/sessions/{sid}/files",
+            files={"file": ("test.csv", b"abcdef", "text/csv")},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["path"] == "/data/test.csv"
+        assert data["filename"] == "test.csv"
+        assert data["size"] == 6
+        assert mock.execute.await_count == 4
+        first_code = mock.execute.await_args_list[0].args[0]
+        second_code = mock.execute.await_args_list[1].args[0]
+        rename_code = mock.execute.await_args_list[3].args[0]
+        assert "with open('/data/test.csv.tmp', 'wb')" in first_code
+        assert "with open('/data/test.csv.tmp', 'ab')" in second_code
+        assert "os.replace('/data/test.csv.tmp', '/data/test.csv')" in rename_code
+
+    async def test_upload_zero_byte_file(self, client):
+        c, mock = client
+
+        async def _exec_side_effect(code: str):
+            if "open('/data/empty.txt', 'wb').close()" in code:
+                return ExecutionResult(
+                    success=True, stdout="", stderr="", error=None, outputs=[], execution_count=1,
+                )
+            if "os.path.isdir('/data')" in code:
+                return ExecutionResult(
+                    success=True,
+                    stdout='[{"filename":"empty.txt","path":"/data/empty.txt","size":0}]\n',
+                    stderr="",
+                    error=None,
+                    outputs=[],
+                    execution_count=2,
+                )
+            return ExecutionResult(
+                success=True, stdout="", stderr="", error=None, outputs=[], execution_count=3,
+            )
+
+        mock.execute = AsyncMock(side_effect=_exec_side_effect)
+        sid = (await c.post("/sessions")).json()["session_id"]
+
+        upload_resp = await c.post(
+            f"/sessions/{sid}/files",
+            files={"file": ("empty.txt", b"", "text/plain")},
+        )
+        assert upload_resp.status_code == 200
+        assert upload_resp.json()["size"] == 0
+
+        list_resp = await c.get(f"/sessions/{sid}/files")
+        assert list_resp.status_code == 200
+        assert list_resp.json()["files"][0]["filename"] == "empty.txt"
+
+    async def test_upload_file_session_not_found(self, client):
+        c, _ = client
+        resp = await c.post(
+            "/sessions/missing/files",
+            files={"file": ("test.csv", b"x", "text/csv")},
+        )
+        assert resp.status_code == 404
+
+    async def test_upload_file_too_large(self, client, monkeypatch):
+        c, _ = client
+        sid = (await c.post("/sessions")).json()["session_id"]
+        monkeypatch.setattr("execution_api.server.UPLOAD_MAX_BYTES", 4)
+        resp = await c.post(
+            f"/sessions/{sid}/files",
+            files={"file": ("big.bin", b"12345", "application/octet-stream")},
+        )
+        assert resp.status_code == 413
+
+    async def test_upload_file_unsafe_filename(self, client):
+        c, _ = client
+        sid = (await c.post("/sessions")).json()["session_id"]
+        resp = await c.post(
+            f"/sessions/{sid}/files",
+            files={"file": ("../etc/passwd", b"x", "text/plain")},
+        )
+        assert resp.status_code == 422
+
+    async def test_upload_no_path_parameter(self, client):
+        c, _ = client
+        sid = (await c.post("/sessions")).json()["session_id"]
+        resp = await c.post(
+            f"/sessions/{sid}/files",
+            files={"file": ("test.csv", b"x", "text/csv")},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["path"] == "/data/test.csv"
+
+    async def test_list_files_success(self, client):
+        c, mock = client
+        mock.execute = AsyncMock(return_value=ExecutionResult(
+            success=True,
+            stdout='[{"filename":"a.csv","path":"/data/a.csv","size":10}]\n',
+            stderr="",
+            error=None,
+            outputs=[],
+            execution_count=1,
+        ))
+        sid = (await c.post("/sessions")).json()["session_id"]
+        resp = await c.get(f"/sessions/{sid}/files")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["files"]) == 1
+        assert data["files"][0]["filename"] == "a.csv"
+        assert mock.execute.await_args is not None
+        code = mock.execute.await_args.args[0]
+        assert "os.listdir('/data/')" in code
+
+    async def test_delete_file_success(self, client):
+        c, mock = client
+        mock.execute = AsyncMock(return_value=ExecutionResult(
+            success=True, stdout='{"ok": true}\n', stderr="", error=None, outputs=[], execution_count=1,
+        ))
+        sid = (await c.post("/sessions")).json()["session_id"]
+        resp = await c.delete(f"/sessions/{sid}/files/test.csv")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert mock.execute.await_args is not None
+        code = mock.execute.await_args.args[0]
+        assert "path = '/data/test.csv'" in code
+        assert "os.remove(path)" in code
+
+    async def test_delete_file_unsafe_filename(self, client):
+        c, _ = client
+        sid = (await c.post("/sessions")).json()["session_id"]
+        resp = await c.delete(f"/sessions/{sid}/files/bad$name")
+        assert resp.status_code == 422
+
+    async def test_delete_nonexistent_file(self, client):
+        c, mock = client
+        mock.execute = AsyncMock(return_value=ExecutionResult(
+            success=True,
+            stdout='{"error":"not_found"}\n',
+            stderr="",
+            error=None,
+            outputs=[],
+            execution_count=1,
+        ))
+        sid = (await c.post("/sessions")).json()["session_id"]
+        resp = await c.delete(f"/sessions/{sid}/files/missing.csv")
+        assert resp.status_code == 404
+        assert resp.json()["error"] == "file not found"
+
+    async def test_one_shot_malformed_json(self, client):
+        c, _ = client
+        resp = await c.post(
+            "/execute",
+            content=b"{not valid json",
+            headers={"content-type": "application/json"},
+        )
+        assert resp.status_code == 422
+        assert resp.json()["error"] == "invalid JSON body"
+
+    async def test_one_shot_missing_code(self, client):
+        c, _ = client
+        resp = await c.post("/execute", json={})
+        assert resp.status_code == 422
+
+    async def test_list_files_empty_session(self, client):
+        c, mock = client
+        mock.execute = AsyncMock(return_value=ExecutionResult(
+            success=True,
+            stdout="[]\n",
+            stderr="",
+            error=None,
+            outputs=[],
+            execution_count=1,
+        ))
+        sid = (await c.post("/sessions")).json()["session_id"]
+        resp = await c.get(f"/sessions/{sid}/files")
+        assert resp.status_code == 200
+        assert resp.json()["files"] == []
+
+    async def test_one_shot_execute_supports_multipart_files(self, client, monkeypatch):
+        c, mock = client
+
+        async def _exec_side_effect(code: str):
+            if "with open('/data/input.csv.tmp', 'wb')" in code:
+                return ExecutionResult(
+                    success=True, stdout="", stderr="", error=None, outputs=[], execution_count=1,
+                )
+            if "os.replace('/data/input.csv.tmp', '/data/input.csv')" in code:
+                return ExecutionResult(
+                    success=True, stdout="", stderr="", error=None, outputs=[], execution_count=2,
+                )
+            return ExecutionResult(
+                success=True, stdout="done\n", stderr="", error=None, outputs=[], execution_count=3,
+            )
+
+        mock.execute = AsyncMock(side_effect=_exec_side_effect)
+        monkeypatch.setattr("execution_api.server.UPLOAD_CHUNK_SIZE", 1024)
+        resp = await c.post(
+            "/execute",
+            files={
+                "code": (None, "print('done')"),
+                "file": ("input.csv", b"a,b\n1,2\n", "text/csv"),
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["stdout"] == "done\n"
+        assert mock.execute.await_count == 3

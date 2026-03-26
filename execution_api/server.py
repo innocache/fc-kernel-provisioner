@@ -1,9 +1,13 @@
 """Execution API — FastAPI server wrapping SandboxSession."""
 
+# pyright: reportMissingImports=false
+
 import asyncio
 import base64
+import json
 import logging
 import os
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -11,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -26,6 +30,8 @@ from .models import (
     ErrorDetail,
     ExecuteRequest,
     ExecuteResponse,
+    FileListResponse,
+    FileUploadResponse,
     OneShotRequest,
     OutputItem,
     SessionInfo,
@@ -43,6 +49,10 @@ ARTIFACT_BASE_DIR = os.environ.get("ARTIFACT_BASE_DIR")
 ARTIFACT_URL_PREFIX = os.environ.get("ARTIFACT_URL_PREFIX")
 SERVE_ARTIFACTS = os.environ.get("SERVE_ARTIFACTS", "true").lower() == "true"
 PORT = int(os.environ.get("PORT", "8000"))
+UPLOAD_MAX_BYTES = 50 * 1024 * 1024
+UPLOAD_CHUNK_SIZE = 2 * 1024 * 1024
+
+_SAFE_FILENAME_RE = re.compile(r"^[a-zA-Z0-9_.\-]+$")
 
 
 
@@ -221,6 +231,66 @@ def _result_to_response(result: ExecutionResult) -> ExecuteResponse:
     )
 
 
+def _validate_safe_filename(filename: str) -> str:
+    if not filename or not _SAFE_FILENAME_RE.match(filename):
+        raise HTTPException(status_code=422, detail="unsafe filename")
+    return filename
+
+
+async def _upload_file_to_vm(
+    session: SandboxSession,
+    content: bytes,
+    dest_path: str,
+    chunk_size: int | None = None,
+) -> None:
+    if chunk_size is None:
+        chunk_size = UPLOAD_CHUNK_SIZE
+    tmp_path = dest_path + ".tmp"
+
+    try:
+        if len(content) == 0:
+            code = (
+                "import os\n"
+                "os.makedirs('/data', exist_ok=True)\n"
+                f"open('{dest_path}', 'wb').close()\n"
+            )
+            result = await session.execute(code)
+            if not result.success:
+                error_msg = result.error.value if result.error else "unknown"
+                raise RuntimeError(f"File write failed: {error_msg}")
+            return
+
+        for offset in range(0, len(content), chunk_size):
+            chunk = content[offset:offset + chunk_size]
+            b64 = base64.b64encode(chunk).decode()
+            mode = "wb" if offset == 0 else "ab"
+            code = (
+                "import base64, os\n"
+                "os.makedirs('/data', exist_ok=True)\n"
+                f"with open('{tmp_path}', '{mode}') as _f:\n"
+                f"    _f.write(base64.b64decode('{b64}'))\n"
+            )
+            result = await session.execute(code)
+            if not result.success:
+                error_msg = result.error.value if result.error else "unknown"
+                raise RuntimeError(f"File write failed: {error_msg}")
+
+        rename_code = f"import os; os.replace('{tmp_path}', '{dest_path}')\n"
+        result = await session.execute(rename_code)
+        if not result.success:
+            error_msg = result.error.value if result.error else "unknown"
+            raise RuntimeError(f"File rename failed: {error_msg}")
+
+    except Exception:
+        try:
+            await session.execute(
+                f"import os\ntry: os.remove('{tmp_path}')\nexcept FileNotFoundError: pass\n",
+            )
+        except Exception:
+            pass
+        raise
+
+
 # ── FastAPI App ──────────────────────────────────────────────────────────
 
 
@@ -270,6 +340,9 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
         except RuntimeError as e:
             detail = "max sessions reached" if "max sessions" in str(e) else "no VMs available"
             raise HTTPException(status_code=503, detail=detail)
+        except Exception as e:
+            logger.error("Session creation failed: %s", e)
+            raise HTTPException(status_code=503, detail="session creation failed")
         return CreateSessionResponse(
             session_id=entry.session_id,
             created_at=datetime.fromtimestamp(entry.created_at, tz=timezone.utc),
@@ -307,26 +380,148 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
             result = await entry.session.execute(req.code)
         return _result_to_response(result)
 
+    @app.post("/sessions/{session_id}/files", response_model=FileUploadResponse)
+    async def upload_file(
+        session_id: str,
+        file: UploadFile = File(...),
+    ):
+        entry = session_manager.get(session_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="session not found")
+
+        filename = _validate_safe_filename(file.filename or "")
+        dest_path = f"/data/{filename}"
+
+        content = await file.read()
+        if len(content) > UPLOAD_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="file too large")
+
+        async with entry.lock:
+            entry.last_active = time.time()
+            try:
+                await _upload_file_to_vm(entry.session, content, dest_path)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=500, detail=str(exc))
+        return FileUploadResponse(path=dest_path, filename=filename, size=len(content))
+
+    @app.get("/sessions/{session_id}/files", response_model=FileListResponse)
+    async def list_files(session_id: str):
+        entry = session_manager.get(session_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="session not found")
+
+        async with entry.lock:
+            entry.last_active = time.time()
+            result = await entry.session.execute(
+                "import os, json\n"
+                "files = []\n"
+                "if os.path.isdir('/data'):\n"
+                "    files = [{\"filename\": f, \"path\": f\"/data/{f}\", \"size\": os.path.getsize(f\"/data/{f}\")} for f in os.listdir('/data/') if os.path.isfile(f\"/data/{f}\")]\n"
+                "print(json.dumps(files))"
+            )
+        if not result.success:
+            error_msg = result.error.value if result.error else "unknown"
+            raise HTTPException(status_code=500, detail=f"file list failed: {error_msg}")
+        try:
+            files = json.loads(result.stdout.strip() or "[]")
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=500, detail="invalid file list output")
+        return FileListResponse(files=files)
+
+    @app.delete("/sessions/{session_id}/files/{filename}", response_model=DeleteResponse)
+    async def delete_file(session_id: str, filename: str):
+        entry = session_manager.get(session_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="session not found")
+        safe_filename = _validate_safe_filename(filename)
+
+        async with entry.lock:
+            entry.last_active = time.time()
+            result = await entry.session.execute(
+                "import os, json\n"
+                f"path = '/data/{safe_filename}'\n"
+                "if not os.path.isfile(path):\n"
+                "    print(json.dumps({'error': 'not_found'}))\n"
+                "else:\n"
+                "    os.remove(path)\n"
+                "    print(json.dumps({'ok': True}))\n"
+            )
+        if not result.success:
+            error_msg = result.error.value if result.error else "unknown"
+            raise HTTPException(status_code=500, detail=f"file delete failed: {error_msg}")
+        try:
+            output = json.loads(result.stdout.strip() or "{}")
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=500, detail="invalid file delete output")
+        if output.get("error") == "not_found":
+            raise HTTPException(status_code=404, detail="file not found")
+        return DeleteResponse()
+
     @app.post("/execute", response_model=ExecuteResponse)
-    async def one_shot_execute(req: OneShotRequest):
-        timeout = req.timeout or session_manager.default_timeout
+    async def one_shot_execute(
+        request: Request,
+        code: str | None = Form(default=None),
+        timeout: int | None = Form(default=None),
+        file: UploadFile | None = File(default=None),
+        files: list[UploadFile] | None = File(default=None),
+    ):
+        req_code = code
+        req_timeout = timeout
+        content_type = request.headers.get("content-type", "")
+
+        if "multipart" in content_type:
+            pass
+        else:
+            try:
+                payload = await request.json()
+            except Exception:
+                raise HTTPException(status_code=422, detail="invalid JSON body")
+            try:
+                req = OneShotRequest.model_validate(payload)
+            except Exception as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
+            req_code = req.code
+            req_timeout = req.timeout
+            files = []
+
+        if "multipart" in content_type:
+            if not req_code or (isinstance(req_code, str) and not req_code.strip()):
+                raise HTTPException(status_code=422, detail="'code' field is required")
+
+        if not req_code:
+            raise HTTPException(status_code=422, detail="code is required")
+
+        timeout = req_timeout or session_manager.default_timeout
         session = SandboxSession(
             gateway_url=session_manager.gateway_url,
             default_timeout=timeout,
             artifact_store=_make_artifact_store(),
         )
-        started = False
         try:
             await session.start()
-            started = True
-            result = await session.execute(req.code)
         except RuntimeError:
-            if started:
-                _schedule_cleanup(session)
             raise HTTPException(status_code=503, detail="no VMs available")
+        except Exception as e:
+            logger.error("One-shot session creation failed: %s", e)
+            raise HTTPException(status_code=503, detail="session creation failed")
+
+        try:
+            upload_files: list[UploadFile] = []
+            if file is not None:
+                upload_files.append(file)
+            if files:
+                upload_files.extend(files)
+
+            if upload_files:
+                for uploaded_file in upload_files:
+                    filename = _validate_safe_filename(uploaded_file.filename or "")
+                    content = await uploaded_file.read()
+                    if len(content) > UPLOAD_MAX_BYTES:
+                        raise HTTPException(status_code=413, detail="file too large")
+                    await _upload_file_to_vm(session, content, f"/data/{filename}")
+            result = await session.execute(req_code)
         except Exception:
-            if started:
-                _schedule_cleanup(session)
+            _schedule_cleanup(session)
             raise
         _schedule_cleanup(session)
         return _result_to_response(result)

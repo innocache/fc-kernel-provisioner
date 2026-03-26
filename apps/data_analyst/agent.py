@@ -8,7 +8,7 @@ import httpx
 
 from .config import (
     CADDY_BASE_URL, DOWNLOAD_MAX_BYTES, RECENT_KEEP_FULL, SYSTEM_PROMPT,
-    TOOLS, TRUNCATED_OUTPUT_CHARS, UPLOAD_CHUNK_SIZE, UPLOAD_MAX_BYTES,
+    TOOLS, TRUNCATED_OUTPUT_CHARS, UPLOAD_MAX_BYTES,
     sanitize_filename,
 )
 from .llm_provider import LLMProvider
@@ -70,6 +70,17 @@ class DataAnalystAgent:
         resp.raise_for_status()
         self.session_id = resp.json()["session_id"]
         await self._execute("import numpy, pandas\nimport matplotlib; matplotlib.use('Agg')")
+        assert self.session_id is not None
+        return self.session_id
+
+    def _require_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            raise RuntimeError("Session not started")
+        return self._client
+
+    def _require_session_id(self) -> str:
+        if self.session_id is None:
+            raise RuntimeError("Session not started")
         return self.session_id
 
     async def end_session(self) -> None:
@@ -89,39 +100,15 @@ class DataAnalystAgent:
                 f"File too large ({len(content)} bytes). Max {UPLOAD_MAX_BYTES // (1024 * 1024)}MB."
             )
         safe_name = sanitize_filename(filename)
-        if len(content) <= UPLOAD_CHUNK_SIZE:
-            return await self._upload_single(safe_name, content)
-        return await self._upload_chunked(safe_name, content)
-
-    async def _upload_single(self, filename: str, content: bytes) -> str:
-        b64 = base64.b64encode(content).decode()
-        code = (
-            "import base64, os\n"
-            "os.makedirs('/data', exist_ok=True)\n"
-            f"data = base64.b64decode('''{b64}''')\n"
-            f"with open('/data/{filename}', 'wb') as f:\n"
-            "    f.write(data)\n"
-            f"print(f'Saved /data/{filename} ({{len(data)}} bytes)')"
+        client = self._require_client()
+        session_id = self._require_session_id()
+        resp = await client.post(
+            f"/sessions/{session_id}/files",
+            files={"file": (safe_name, content)},
         )
-        result = await self._execute(code)
-        return result.get("stdout", "").strip()
-
-    async def _upload_chunked(self, filename: str, content: bytes) -> str:
-        total = len(content)
-        path = f"/data/{filename}"
-        for offset in range(0, total, UPLOAD_CHUNK_SIZE):
-            chunk = content[offset:offset + UPLOAD_CHUNK_SIZE]
-            b64 = base64.b64encode(chunk).decode()
-            mode = "wb" if offset == 0 else "ab"
-            code = (
-                "import base64, os\n"
-                "os.makedirs('/data', exist_ok=True)\n"
-                f"with open('{path}', '{mode}') as f:\n"
-                f"    f.write(base64.b64decode('''{b64}'''))\n"
-                f"print('chunk {offset // UPLOAD_CHUNK_SIZE + 1}')"
-            )
-            await self._execute(code)
-        return f"Saved {path} ({total} bytes, chunked)"
+        resp.raise_for_status()
+        data = resp.json()
+        return f"Saved {data['path']} ({data['size']} bytes)"
 
     async def download_file(self, path: str) -> FileDownload:
         if not path.startswith("/data/"):
@@ -195,8 +182,10 @@ class DataAnalystAgent:
             yield TextDelta(text=response.text)
 
     async def _execute(self, code: str) -> dict:
-        resp = await self._client.post(
-            f"/sessions/{self.session_id}/execute", json={"code": code},
+        client = self._require_client()
+        session_id = self._require_session_id()
+        resp = await client.post(
+            f"/sessions/{session_id}/execute", json={"code": code},
         )
         return resp.json()
 
@@ -217,8 +206,10 @@ class DataAnalystAgent:
             }
 
     async def _launch_dashboard(self, code: str) -> dict:
-        resp = await self._client.post(
-            f"/sessions/{self.session_id}/dashboard", json={"code": code},
+        client = self._require_client()
+        session_id = self._require_session_id()
+        resp = await client.post(
+            f"/sessions/{session_id}/dashboard", json={"code": code},
         )
         if resp.status_code == 200:
             data = resp.json()

@@ -55,6 +55,22 @@ class DeleteResponse(BaseModel):
     ok: bool = True
 
 
+class FileUploadResponse(BaseModel):
+    path: str
+    filename: str
+    size: int
+
+
+class FileInfo(BaseModel):
+    filename: str
+    path: str
+    size: int
+
+
+class FileListResponse(BaseModel):
+    files: list[FileInfo]
+
+
 class ErrorResponse(BaseModel):
     error: str
 

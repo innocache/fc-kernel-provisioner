@@ -761,6 +761,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "jupyter-client" },
     { name = "prometheus-client" },
+    { name = "python-multipart" },
     { name = "pyyaml" },
     { name = "uvicorn" },
 ]
@@ -786,6 +787,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "jupyter-client", specifier = ">=7.0" },
     { name = "prometheus-client", specifier = ">=0.20" },
+    { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "uvicorn", specifier = ">=0.34" },
 ]

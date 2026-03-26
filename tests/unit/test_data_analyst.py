@@ -1,4 +1,5 @@
 import base64
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -124,7 +125,10 @@ def _mock_http_client(execute_result=None, session_id="test-session"):
 
 def _mock_response(url, execute_result, session_id):
     resp = MagicMock()
-    if "/sessions" in url and "/execute" not in url and "/dashboard" not in url:
+    if "/files" in url:
+        resp.json.return_value = {"path": "/data/test.csv", "filename": "test.csv", "size": 5}
+        resp.raise_for_status = MagicMock()
+    elif "/sessions" in url and "/execute" not in url and "/dashboard" not in url:
         resp.json.return_value = {"session_id": session_id}
         resp.raise_for_status = MagicMock()
     elif "/execute" in url:
@@ -165,10 +169,10 @@ class TestAgentSession:
 class TestAgentUpload:
     async def test_small_upload(self):
         agent = DataAnalystAgent(api_url="http://test", provider=_mock_provider())
-        agent._client = _mock_http_client({"success": True, "stdout": "Saved /data/test.csv (10 bytes)", "stderr": "", "error": None, "outputs": [], "execution_count": 1})
+        agent._client = _mock_http_client()
         agent.session_id = "s1"
         result = await agent.upload_file("test.csv", b"hello")
-        assert "Saved" in result
+        assert result == "Saved /data/test.csv (5 bytes)"
 
     async def test_rejects_oversized(self):
         agent = DataAnalystAgent(api_url="http://test", provider=_mock_provider())
@@ -178,12 +182,13 @@ class TestAgentUpload:
 
     async def test_sanitizes_filename(self):
         agent = DataAnalystAgent(api_url="http://test", provider=_mock_provider())
-        agent._client = _mock_http_client({"success": True, "stdout": "ok", "stderr": "", "error": None, "outputs": [], "execution_count": 1})
+        agent._client = _mock_http_client()
         agent.session_id = "s1"
         await agent.upload_file("../../etc/passwd", b"data")
         call_args = agent._client.post.call_args
-        code = call_args.kwargs.get("json", {}).get("code", "") if call_args.kwargs else call_args[1].get("json", {}).get("code", "")
-        assert "../../" not in code
+        files = call_args.kwargs.get("files", {}) if call_args.kwargs else call_args[1].get("files", {})
+        uploaded_name = files["file"][0]
+        assert "../" not in uploaded_name
 
 
 class TestAgentDownload:
@@ -308,7 +313,7 @@ class TestContextCompaction:
 
     def test_compaction_truncates_old(self):
         agent = DataAnalystAgent(api_url="http://test", provider=_mock_provider())
-        messages = [{"role": "user", "content": "hi"}]
+        messages: list[dict[str, Any]] = [{"role": "user", "content": "hi"}]
         for i in range(15):
             messages.append({"role": "assistant", "content": []})
             messages.append({"role": "user", "content": [
@@ -388,20 +393,16 @@ class TestMultiToolResponse:
         assert tool_starts[1].code == "print(x)"
 
 
-class TestChunkedUpload:
-    async def test_large_file_splits_into_chunks(self):
+class TestUploadDelegatesChunkingToServer:
+    async def test_large_file_uses_single_multipart_post(self):
         agent = DataAnalystAgent(api_url="http://test", provider=_mock_provider())
-        agent._client = _mock_http_client({
-            "success": True, "stdout": "chunk 1\n", "stderr": "",
-            "error": None, "outputs": [], "execution_count": 1,
-        })
+        agent._client = _mock_http_client()
         agent.session_id = "s1"
         content = b"x" * (5 * 1024 * 1024)
         result = await agent.upload_file("big.csv", content)
-        assert "chunked" in result
-        post_calls = [c for c in agent._client.post.call_args_list
-                      if "execute" in str(c)]
-        assert len(post_calls) >= 2
+        assert result == "Saved /data/test.csv (5 bytes)"
+        post_calls = [c for c in agent._client.post.call_args_list if "/files" in str(c)]
+        assert len(post_calls) == 1
 
 
 class TestSessionRecovery:
