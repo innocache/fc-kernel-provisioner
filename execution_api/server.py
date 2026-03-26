@@ -351,6 +351,7 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
         kernel_id = getattr(entry.session, "_kernel_id", None)
         if kernel_id is None:
             raise HTTPException(status_code=503, detail="kernel not available")
+        entry.last_active = time.time()
 
         async with entry.lock:
             app_id = uuid.uuid4().hex[:12]
@@ -380,6 +381,7 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
         entry = session_manager.get(session_id)
         if entry is None:
             raise HTTPException(status_code=404, detail="session not found")
+        entry.last_active = time.time()
 
         async with entry.lock:
             try:
