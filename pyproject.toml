@@ -38,7 +38,7 @@ firecracker-provisioner = "fc_provisioner:FirecrackerProvisioner"
 firecracker-warm-pool = "fc_provisioner.warm_pool:WarmPoolProvisioner"
 
 [tool.hatch.build.targets.wheel]
-packages = ["fc_provisioner", "fc_pool_manager", "sandbox_client", "execution_api"]
+packages = ["fc_provisioner", "fc_pool_manager", "execution_api"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

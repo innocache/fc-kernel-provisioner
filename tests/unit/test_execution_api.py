@@ -399,7 +399,7 @@ class TestSessionManagerDashboardState:
 
 
 from execution_api.server import _result_to_response, create_app
-from sandbox_client import DisplayOutput, ExecutionError, ExecutionResult
+from execution_api._sandbox import DisplayOutput, ExecutionError, ExecutionResult
 
 import httpx
 

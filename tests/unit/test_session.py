@@ -8,7 +8,7 @@ import aiohttp
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from sandbox_client.session import SandboxSession
+from execution_api._sandbox.session import SandboxSession
 
 
 def _make_mock_session(kernel_id="test-kernel-id"):
@@ -68,7 +68,7 @@ def _queue_ws_messages(mock_ws, messages, idle_msg_id=None):
 
 
 class TestSandboxSessionLifecycle:
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_start_creates_kernel(self, MockClientSession):
         mock_http, mock_ws = _make_mock_session()
         MockClientSession.return_value = mock_http
@@ -81,7 +81,7 @@ class TestSandboxSessionLifecycle:
             json={"name": "python3-firecracker"},
         )
 
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_start_opens_websocket(self, MockClientSession):
         mock_http, mock_ws = _make_mock_session()
         MockClientSession.return_value = mock_http
@@ -93,7 +93,7 @@ class TestSandboxSessionLifecycle:
             "ws://gw:8888/api/kernels/test-kernel-id/channels",
         )
 
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_stop_deletes_kernel(self, MockClientSession):
         mock_http, mock_ws = _make_mock_session()
         MockClientSession.return_value = mock_http
@@ -107,7 +107,7 @@ class TestSandboxSessionLifecycle:
         )
         mock_http.close.assert_called_once()
 
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_context_manager(self, MockClientSession):
         mock_http, mock_ws = _make_mock_session()
         MockClientSession.return_value = mock_http
@@ -117,7 +117,7 @@ class TestSandboxSessionLifecycle:
 
         mock_http.delete.assert_called_once()
 
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_context_manager_suppresses_stop_errors(self, MockClientSession):
         mock_http, mock_ws = _make_mock_session()
         mock_http.delete = AsyncMock(side_effect=ConnectionError("gone"))
@@ -132,7 +132,7 @@ class TestSandboxSessionLifecycle:
         with pytest.raises(RuntimeError, match="Session not started"):
             await session.execute("print('hi')")
 
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_stop_is_idempotent(self, MockClientSession):
         mock_http, mock_ws = _make_mock_session()
         MockClientSession.return_value = mock_http
@@ -142,7 +142,7 @@ class TestSandboxSessionLifecycle:
         await session.stop()
         await session.stop()  # Should not raise
 
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_start_503_raises(self, MockClientSession):
         mock_http, mock_ws = _make_mock_session()
         post_resp = AsyncMock()
@@ -156,7 +156,7 @@ class TestSandboxSessionLifecycle:
 
 
 class TestSandboxSessionExecute:
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_execute_returns_stdout(self, MockClientSession):
         mock_http, mock_ws = _make_mock_session()
         MockClientSession.return_value = mock_http
@@ -164,7 +164,7 @@ class TestSandboxSessionExecute:
         session = SandboxSession("http://gw:8888")
         await session.start()
 
-        with patch("sandbox_client.session.uuid") as mock_uuid:
+        with patch("execution_api._sandbox.session.uuid") as mock_uuid:
             mock_uuid.uuid4.return_value = MagicMock(hex="abc123")
             _queue_ws_messages(mock_ws, [
                 {
@@ -179,7 +179,7 @@ class TestSandboxSessionExecute:
         assert result.success is True
         assert result.stdout == "hello\n"
 
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_execute_sends_correct_message(self, MockClientSession):
         mock_http, mock_ws = _make_mock_session()
         MockClientSession.return_value = mock_http
@@ -187,7 +187,7 @@ class TestSandboxSessionExecute:
         session = SandboxSession("http://gw:8888")
         await session.start()
 
-        with patch("sandbox_client.session.uuid") as mock_uuid:
+        with patch("execution_api._sandbox.session.uuid") as mock_uuid:
             mock_uuid.uuid4.return_value = MagicMock(hex="msg123")
             _queue_ws_messages(mock_ws, [], idle_msg_id="msg123")
             await session.execute("x = 1")
@@ -197,7 +197,7 @@ class TestSandboxSessionExecute:
         assert sent["content"]["code"] == "x = 1"
         assert sent["channel"] == "shell"
 
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_execute_timeout_interrupts_kernel(self, MockClientSession):
         mock_http, mock_ws = _make_mock_session()
         MockClientSession.return_value = mock_http
@@ -232,7 +232,7 @@ class TestSandboxSessionExecute:
         assert result.error is not None
         assert result.error.name == "TimeoutError"
 
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_execute_websocket_close_raises(self, MockClientSession):
         mock_http, mock_ws = _make_mock_session()
         MockClientSession.return_value = mock_http
@@ -244,14 +244,14 @@ class TestSandboxSessionExecute:
         session = SandboxSession("http://gw:8888")
         await session.start()
 
-        with patch("sandbox_client.session.uuid") as mock_uuid:
+        with patch("execution_api._sandbox.session.uuid") as mock_uuid:
             mock_uuid.uuid4.return_value = MagicMock(hex="x")
             with pytest.raises(ConnectionError):
                 await session.execute("print('hi')")
 
 
 class TestSandboxSessionArtifacts:
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_execute_with_artifact_store(self, MockClientSession):
         mock_http, mock_ws = _make_mock_session()
         MockClientSession.return_value = mock_http
@@ -264,7 +264,7 @@ class TestSandboxSessionArtifacts:
 
         png_b64 = base64.b64encode(b"fake-png").decode()
 
-        with patch("sandbox_client.session.uuid") as mock_uuid:
+        with patch("execution_api._sandbox.session.uuid") as mock_uuid:
             mock_uuid.uuid4.return_value = MagicMock(hex="aid1")
             _queue_ws_messages(mock_ws, [
                 {
@@ -281,7 +281,7 @@ class TestSandboxSessionArtifacts:
         assert result.outputs[0].data == b"fake-png"
         mock_store.save.assert_called_once()
 
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_artifact_store_str_data_encoded_to_bytes(self, MockClientSession):
         """Text display outputs are encoded to UTF-8 bytes before save()."""
         mock_http, mock_ws = _make_mock_session()
@@ -293,7 +293,7 @@ class TestSandboxSessionArtifacts:
         session = SandboxSession("http://gw:8888", artifact_store=mock_store)
         await session.start()
 
-        with patch("sandbox_client.session.uuid") as mock_uuid:
+        with patch("execution_api._sandbox.session.uuid") as mock_uuid:
             mock_uuid.uuid4.return_value = MagicMock(hex="sid1")
             _queue_ws_messages(mock_ws, [
                 {
@@ -310,7 +310,7 @@ class TestSandboxSessionArtifacts:
         assert call_args[0][2] == b"<b>hello</b>"  # data arg is bytes
         assert call_args[0][3] == "text/html"  # content_type
 
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_artifact_store_unknown_mime_uses_bin_extension(self, MockClientSession):
         """Unknown mime types get .bin extension for artifact filename."""
         mock_http, mock_ws = _make_mock_session()
@@ -322,7 +322,7 @@ class TestSandboxSessionArtifacts:
         session = SandboxSession("http://gw:8888", artifact_store=mock_store)
         await session.start()
 
-        with patch("sandbox_client.session.uuid") as mock_uuid:
+        with patch("execution_api._sandbox.session.uuid") as mock_uuid:
             mock_uuid.uuid4.return_value = MagicMock(hex="unk1")
             _queue_ws_messages(mock_ws, [
                 {
@@ -339,7 +339,7 @@ class TestSandboxSessionArtifacts:
 
 
 class TestSandboxSessionEdgeCases:
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_https_to_wss_conversion(self, MockClientSession):
         """HTTPS gateway URL is converted to WSS for WebSocket."""
         mock_http, mock_ws = _make_mock_session()
@@ -352,7 +352,7 @@ class TestSandboxSessionEdgeCases:
             "wss://gw:8888/api/kernels/test-kernel-id/channels",
         )
 
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_custom_kernel_name(self, MockClientSession):
         """Custom kernel_name is passed to POST /api/kernels."""
         mock_http, mock_ws = _make_mock_session()
@@ -366,7 +366,7 @@ class TestSandboxSessionEdgeCases:
             json={"name": "my-kernel"},
         )
 
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_trailing_slash_stripped_from_url(self, MockClientSession):
         """Trailing slash in gateway_url is stripped."""
         mock_http, mock_ws = _make_mock_session()
@@ -380,7 +380,7 @@ class TestSandboxSessionEdgeCases:
             json={"name": "python3-firecracker"},
         )
 
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_messages_with_wrong_msg_id_filtered(self, MockClientSession):
         """Messages from other executions are filtered by msg_id."""
         mock_http, mock_ws = _make_mock_session()
@@ -389,7 +389,7 @@ class TestSandboxSessionEdgeCases:
         session = SandboxSession("http://gw:8888")
         await session.start()
 
-        with patch("sandbox_client.session.uuid") as mock_uuid:
+        with patch("execution_api._sandbox.session.uuid") as mock_uuid:
             mock_uuid.uuid4.return_value = MagicMock(hex="my-msg")
             _queue_ws_messages(mock_ws, [
                 # This message has a different parent msg_id — should be ignored
@@ -410,7 +410,7 @@ class TestSandboxSessionEdgeCases:
 
         assert result.stdout == "from mine\n"
 
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_ws_closing_type_raises_connection_error(self, MockClientSession):
         """CLOSING WebSocket type also raises ConnectionError."""
         mock_http, mock_ws = _make_mock_session()
@@ -423,12 +423,12 @@ class TestSandboxSessionEdgeCases:
         session = SandboxSession("http://gw:8888")
         await session.start()
 
-        with patch("sandbox_client.session.uuid") as mock_uuid:
+        with patch("execution_api._sandbox.session.uuid") as mock_uuid:
             mock_uuid.uuid4.return_value = MagicMock(hex="x")
             with pytest.raises(ConnectionError):
                 await session.execute("x")
 
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_ws_error_type_raises_connection_error(self, MockClientSession):
         """ERROR WebSocket type raises ConnectionError."""
         mock_http, mock_ws = _make_mock_session()
@@ -441,12 +441,12 @@ class TestSandboxSessionEdgeCases:
         session = SandboxSession("http://gw:8888")
         await session.start()
 
-        with patch("sandbox_client.session.uuid") as mock_uuid:
+        with patch("execution_api._sandbox.session.uuid") as mock_uuid:
             mock_uuid.uuid4.return_value = MagicMock(hex="x")
             with pytest.raises(ConnectionError):
                 await session.execute("x")
 
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_stop_handles_ws_exit_exception(self, MockClientSession):
         """stop() tolerates exceptions from WebSocket context exit."""
         mock_http, mock_ws = _make_mock_session()
@@ -463,7 +463,7 @@ class TestSandboxSessionEdgeCases:
         # Kernel should still be deleted despite ws exit error
         mock_http.delete.assert_called_once()
 
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_stop_handles_delete_exception(self, MockClientSession):
         """stop() tolerates exceptions from kernel DELETE."""
         mock_http, mock_ws = _make_mock_session()
@@ -484,7 +484,7 @@ class TestSandboxSessionEdgeCases:
         with pytest.raises(RuntimeError, match="Session not started"):
             await session.execute("x")
 
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_default_timeout_used_when_none(self, MockClientSession):
         """default_timeout is used when execute() timeout is None."""
         mock_http, mock_ws = _make_mock_session()
@@ -513,7 +513,7 @@ class TestSandboxSessionEdgeCases:
         assert result.error.name == "TimeoutError"
         assert "0.1s" in result.error.value
 
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_context_manager_propagates_body_exception(self, MockClientSession):
         """Exceptions from the async with body propagate (not suppressed)."""
         mock_http, mock_ws = _make_mock_session()
@@ -526,7 +526,7 @@ class TestSandboxSessionEdgeCases:
         # stop() should still have been called
         mock_http.delete.assert_called_once()
 
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_binary_ws_message_parsed(self, MockClientSession):
         """BINARY WebSocket messages are also parsed."""
         mock_http, mock_ws = _make_mock_session()
@@ -535,7 +535,7 @@ class TestSandboxSessionEdgeCases:
         session = SandboxSession("http://gw:8888")
         await session.start()
 
-        with patch("sandbox_client.session.uuid") as mock_uuid:
+        with patch("execution_api._sandbox.session.uuid") as mock_uuid:
             mock_uuid.uuid4.return_value = MagicMock(hex="bin1")
 
             # Create raw messages: one BINARY, then idle
@@ -561,7 +561,7 @@ class TestSandboxSessionEdgeCases:
 
         assert result.stdout == "binary\n"
 
-    @patch("sandbox_client.session.aiohttp.ClientSession")
+    @patch("execution_api._sandbox.session.aiohttp.ClientSession")
     async def test_non_text_non_binary_ws_message_skipped(self, MockClientSession):
         """Non-TEXT/BINARY WebSocket messages (e.g. PING) are skipped."""
         mock_http, mock_ws = _make_mock_session()
@@ -570,7 +570,7 @@ class TestSandboxSessionEdgeCases:
         session = SandboxSession("http://gw:8888")
         await session.start()
 
-        with patch("sandbox_client.session.uuid") as mock_uuid:
+        with patch("execution_api._sandbox.session.uuid") as mock_uuid:
             mock_uuid.uuid4.return_value = MagicMock(hex="ping1")
 
             ping_msg = MagicMock()

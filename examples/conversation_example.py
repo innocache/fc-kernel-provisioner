@@ -3,8 +3,9 @@
 import asyncio
 
 import anthropic
+import httpx
 
-from sandbox_client import SandboxSession
+API_URL = "http://localhost:8000"
 
 TOOL_DEFINITION = {
     "name": "execute_python_code",
@@ -26,81 +27,78 @@ TOOL_DEFINITION = {
 }
 
 
-def format_result(result):
+def format_result(data: dict) -> str:
     parts = []
-    if result.stdout:
-        parts.append(result.stdout)
-    if result.stderr:
-        parts.append(f"[stderr]: {result.stderr}")
-    if result.error:
-        parts.append(f"[error]: {result.error.name}: {result.error.value}")
-    for i, output in enumerate(result.outputs):
-        if output.url:
-            parts.append(f"[output {i}]: {output.mime_type} at {output.url}")
-        elif isinstance(output.data, str):
-            parts.append(f"[output {i}]: {output.mime_type}\n{output.data}")
-        else:
-            parts.append(
-                f"[output {i}]: {output.mime_type} ({len(output.data)} bytes)",
-            )
+    if data.get("stdout"):
+        parts.append(data["stdout"])
+    if data.get("stderr"):
+        parts.append(f"[stderr]: {data['stderr']}")
+    if data.get("error"):
+        err = data["error"]
+        parts.append(f"[error]: {err['name']}: {err['value']}")
+    for i, out in enumerate(data.get("outputs", [])):
+        parts.append(f"[output {i}]: {out.get('mime_type', '?')}")
     return "\n".join(parts) or "(no output)"
 
 
 async def main():
-    client = anthropic.Anthropic()
+    llm = anthropic.Anthropic()
     messages = []
 
-    session = SandboxSession("http://localhost:8888")
-    await session.start()
+    async with httpx.AsyncClient(base_url=API_URL, timeout=120) as http:
+        sid = (await http.post("/sessions")).json()["session_id"]
 
-    try:
-        while True:
-            user_input = input("> ")
-            if user_input.lower() in ("exit", "quit"):
-                break
+        try:
+            while True:
+                user_input = input("> ")
+                if user_input.lower() in ("exit", "quit"):
+                    break
 
-            messages.append({"role": "user", "content": user_input})
+                messages.append({"role": "user", "content": user_input})
 
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=4096,
-                tools=[TOOL_DEFINITION],
-                messages=messages,
-            )
-
-            while response.stop_reason == "tool_use":
-                messages.append(
-                    {"role": "assistant", "content": response.content},
-                )
-                tool_results = []
-
-                for block in response.content:
-                    if block.type == "tool_use":
-                        result = await session.execute(block.input["code"])
-                        tool_results.append(
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": block.id,
-                                "content": format_result(result),
-                            },
-                        )
-
-                messages.append({"role": "user", "content": tool_results})
-                response = client.messages.create(
+                response = llm.messages.create(
                     model="claude-sonnet-4-20250514",
                     max_tokens=4096,
                     tools=[TOOL_DEFINITION],
                     messages=messages,
                 )
 
-            messages.append(
-                {"role": "assistant", "content": response.content},
-            )
-            for block in response.content:
-                if hasattr(block, "text"):
-                    print(block.text)
-    finally:
-        await session.stop()
+                while response.stop_reason == "tool_use":
+                    messages.append(
+                        {"role": "assistant", "content": response.content},
+                    )
+                    tool_results = []
+
+                    for block in response.content:
+                        if block.type == "tool_use":
+                            resp = await http.post(
+                                f"/sessions/{sid}/execute",
+                                json={"code": block.input["code"]},
+                            )
+                            tool_results.append(
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": block.id,
+                                    "content": format_result(resp.json()),
+                                },
+                            )
+
+                    messages.append({"role": "user", "content": tool_results})
+                    response = llm.messages.create(
+                        model="claude-sonnet-4-20250514",
+                        max_tokens=4096,
+                        tools=[TOOL_DEFINITION],
+                        messages=messages,
+                    )
+
+                messages.append(
+                    {"role": "assistant", "content": response.content},
+                )
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        print(block.text)
+        finally:
+            await http.delete(f"/sessions/{sid}")
 
 
 asyncio.run(main())

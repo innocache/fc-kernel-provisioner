@@ -3,7 +3,7 @@
 import base64
 import json
 
-from sandbox_client.output import (
+from execution_api._sandbox.output import (
     DisplayOutput,
     ExecutionError,
     ExecutionResult,

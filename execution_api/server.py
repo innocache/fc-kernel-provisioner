@@ -20,7 +20,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from sandbox_client import ExecutionResult, LocalArtifactStore, SandboxSession
+from ._sandbox import ExecutionResult, LocalArtifactStore, SandboxSession
 from .models import (
     CreateSessionRequest,
     CreateSessionResponse,

@@ -4,7 +4,6 @@ WORKDIR /app
 
 COPY pyproject.toml ./
 COPY execution_api/ execution_api/
-COPY sandbox_client/ sandbox_client/
 
 RUN pip install --no-cache-dir \
     fastapi>=0.115 uvicorn>=0.34 aiohttp>=3.9 httpx>=0.27 \

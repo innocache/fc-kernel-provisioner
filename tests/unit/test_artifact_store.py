@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from sandbox_client.artifact_store import ArtifactStore, LocalArtifactStore
+from execution_api._sandbox.artifact_store import ArtifactStore, LocalArtifactStore
 
 
 class TestLocalArtifactStore:

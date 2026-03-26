@@ -3,8 +3,9 @@
 import asyncio
 
 import anthropic
+import httpx
 
-from sandbox_client import SandboxSession
+API_URL = "http://localhost:8000"
 
 TOOL_DEFINITION = {
     "name": "execute_python_code",
@@ -25,30 +26,24 @@ TOOL_DEFINITION = {
 }
 
 
-def format_result(result):
+def format_result(data: dict) -> str:
     parts = []
-    if result.stdout:
-        parts.append(result.stdout)
-    if result.stderr:
-        parts.append(f"[stderr]: {result.stderr}")
-    if result.error:
-        parts.append(f"[error]: {result.error.name}: {result.error.value}")
-    for i, output in enumerate(result.outputs):
-        if output.url:
-            parts.append(f"[output {i}]: {output.mime_type} at {output.url}")
-        elif isinstance(output.data, str):
-            parts.append(f"[output {i}]: {output.mime_type}\n{output.data}")
-        else:
-            parts.append(
-                f"[output {i}]: {output.mime_type} ({len(output.data)} bytes)",
-            )
+    if data.get("stdout"):
+        parts.append(data["stdout"])
+    if data.get("stderr"):
+        parts.append(f"[stderr]: {data['stderr']}")
+    if data.get("error"):
+        err = data["error"]
+        parts.append(f"[error]: {err['name']}: {err['value']}")
+    for i, out in enumerate(data.get("outputs", [])):
+        parts.append(f"[output {i}]: {out.get('mime_type', '?')}")
     return "\n".join(parts) or "(no output)"
 
 
 async def main():
-    client = anthropic.Anthropic()
+    llm = anthropic.Anthropic()
 
-    response = client.messages.create(
+    response = llm.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=1024,
         tools=[TOOL_DEFINITION],
@@ -59,12 +54,11 @@ async def main():
 
     for block in response.content:
         if block.type == "tool_use" and block.name == "execute_python_code":
-            async with SandboxSession("http://localhost:8888") as session:
-                result = await session.execute(block.input["code"])
+            async with httpx.AsyncClient(base_url=API_URL, timeout=120) as http:
+                resp = await http.post("/execute", json={"code": block.input["code"]})
+                result = resp.json()
 
-            tool_result = format_result(result)
-
-            final = client.messages.create(
+            final = llm.messages.create(
                 model="claude-sonnet-4-20250514",
                 max_tokens=1024,
                 tools=[TOOL_DEFINITION],
@@ -80,7 +74,7 @@ async def main():
                             {
                                 "type": "tool_result",
                                 "tool_use_id": block.id,
-                                "content": tool_result,
+                                "content": format_result(result),
                             },
                         ],
                     },

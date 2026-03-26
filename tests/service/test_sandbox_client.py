@@ -1,5 +1,5 @@
 import pytest
-from sandbox_client import SandboxSession
+from execution_api._sandbox import SandboxSession
 
 
 class TestSandboxClient:

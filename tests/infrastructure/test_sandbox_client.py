@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from sandbox_client import SandboxSession, LocalArtifactStore
+from execution_api._sandbox import SandboxSession, LocalArtifactStore
 
 GATEWAY_URL = os.environ.get("KERNEL_GATEWAY_URL", "http://localhost:8888")
 
