@@ -55,11 +55,11 @@ CODE_TIERS = {
 }
 
 DASHBOARD_TIERS = {
-    "D1_static": 'import panel as pn\npn.panel("hello dashboard").servable()',
+    "D1_static": 'import panel as pn\napp = pn.pane.Markdown("hello dashboard")',
     "D2_table": (
         "import panel as pn, pandas as pd, numpy as np\n"
         "df = pd.DataFrame(np.random.randn(1000, 5), columns=list('ABCDE'))\n"
-        "pn.widgets.Tabulator(df, page_size=20).servable()"
+        "app = pn.widgets.Tabulator(df, page_size=20)"
     ),
     "D3_interactive": (
         "import panel as pn, pandas as pd, numpy as np\n"
@@ -69,7 +69,7 @@ DASHBOARD_TIERS = {
         "@pn.depends(col_sel, bins_sl)\n"
         "def plot(col, bins):\n"
         "    return df[col].plot.hist(bins=bins, title=f'{col} distribution')\n"
-        "pn.Column(col_sel, bins_sl, plot, pn.widgets.Tabulator(df, page_size=10)).servable()"
+        "app = pn.Column(col_sel, bins_sl, plot, pn.widgets.Tabulator(df, page_size=10))"
     ),
 }
 
@@ -109,10 +109,16 @@ class TimingResult:
 
 # ── Benchmark Harness ────────────────────────────────────────────────────
 
-async def create_session(client: httpx.AsyncClient) -> str:
-    resp = await client.post("/sessions")
-    resp.raise_for_status()
-    return resp.json()["session_id"]
+async def create_session(client: httpx.AsyncClient, retries: int = 3) -> str:
+    for attempt in range(retries):
+        try:
+            resp = await client.post("/sessions", timeout=30.0)
+            resp.raise_for_status()
+            return resp.json()["session_id"]
+        except Exception:
+            if attempt == retries - 1:
+                raise
+            await asyncio.sleep(2 * (attempt + 1))
 
 
 async def delete_session(client: httpx.AsyncClient, sid: str) -> None:
