@@ -56,6 +56,28 @@ def _pool_has_idle_vms() -> bool:
         return False
 
 
+def _session_create_works() -> bool:
+    """Create and destroy a real session to verify the full stack is ready,
+    including the KG warm pool which may still be filling after restart."""
+    import json
+    import urllib.request
+    api = EXECUTION_API_URL
+    try:
+        req = urllib.request.Request(f"{api}/sessions", data=b"", method="POST")
+        req.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            if resp.status != 200:
+                return False
+            sid = json.loads(resp.read())["session_id"]
+        urllib.request.urlopen(
+            urllib.request.Request(f"{api}/sessions/{sid}", method="DELETE"),
+            timeout=10,
+        )
+        return True
+    except Exception:
+        return False
+
+
 def _start_services():
     config = os.path.join(_PROJECT_DIR, "config", "fc-pool.yaml")
     caddyfile = os.path.join(_PROJECT_DIR, "config", "Caddyfile")
@@ -117,14 +139,28 @@ def _stop_services():
     _PROCS.clear()
 
 
+def _wait_for_warm_pool(timeout: int = 180) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _session_create_works():
+            return True
+        time.sleep(5)
+    return False
+
+
 def pytest_configure(config):
     if _all_services_ready():
         if not _pool_has_idle_vms():
             deadline = time.time() + 60
             while time.time() < deadline:
                 if _pool_has_idle_vms():
-                    return
+                    break
                 time.sleep(2)
+            else:
+                config._integration_skip = True
+                return
+        if not _wait_for_warm_pool():
+            pytest.exit("Warm pool not ready: session creation failed after 180s", returncode=1)
         return
 
     if os.environ.get("FC_START_SERVICES") == "1":
