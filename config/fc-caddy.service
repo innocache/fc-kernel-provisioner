@@ -1,0 +1,13 @@
+[Unit]
+Description=Caddy reverse proxy for dashboard serving
+After=fc-execution-api.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/caddy run --config /opt/fc-kernel-provisioner/config/Caddyfile
+Restart=on-failure
+RestartSec=5
+WorkingDirectory=/opt/fc-kernel-provisioner
+
+[Install]
+WantedBy=multi-user.target

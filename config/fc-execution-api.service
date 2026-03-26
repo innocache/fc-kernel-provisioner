@@ -1,0 +1,18 @@
+[Unit]
+Description=Firecracker Execution API
+After=fc-pool-manager.service fc-kernel-gateway.service
+Requires=fc-pool-manager.service fc-kernel-gateway.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env uv run python -m execution_api.server
+Restart=on-failure
+RestartSec=5
+User=root
+Environment=PYTHONUNBUFFERED=1
+Environment=GATEWAY_URL=http://localhost:8888
+Environment=POOL_SOCKET=/var/run/fc-pool.sock
+WorkingDirectory=/opt/fc-kernel-provisioner
+
+[Install]
+WantedBy=multi-user.target

@@ -79,7 +79,7 @@ fi
 
 REMOTE_DIR="~/fc-kernel-provisioner"
 OPT_DIR="/opt/fc-kernel-provisioner"
-SERVICES="fc-pool-manager fc-kernel-gateway"
+SERVICES="fc-pool-manager fc-kernel-gateway fc-execution-api fc-caddy"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -108,7 +108,8 @@ sync_code() {
 
 wait_for_services() {
     step "Waiting for services to be ready (timeout 120s)..."
-    local timeout=120 elapsed=0 pool_ready=false gw_ready=false
+    local timeout=120 elapsed=0
+    local pool_ready=false gw_ready=false api_ready=false caddy_ready=false
 
     while [[ $elapsed -lt $timeout ]]; do
         if [[ "$pool_ready" == "false" ]]; then
@@ -117,15 +118,26 @@ wait_for_services() {
                 info "Pool manager is ready ✓"
             fi
         fi
-
         if [[ "$gw_ready" == "false" ]]; then
             if ssh "$HOST" "curl -sf http://localhost:8888/api" &>/dev/null; then
                 gw_ready=true
                 info "Kernel Gateway is ready ✓"
             fi
         fi
+        if [[ "$api_ready" == "false" ]]; then
+            if ssh "$HOST" "curl -sf http://localhost:8000/sessions" &>/dev/null; then
+                api_ready=true
+                info "Execution API is ready ✓"
+            fi
+        fi
+        if [[ "$caddy_ready" == "false" ]]; then
+            if ssh "$HOST" "curl -sf http://localhost:8080/health" &>/dev/null; then
+                caddy_ready=true
+                info "Caddy is ready ✓"
+            fi
+        fi
 
-        if [[ "$pool_ready" == "true" && "$gw_ready" == "true" ]]; then
+        if [[ "$pool_ready" == "true" && "$gw_ready" == "true" && "$api_ready" == "true" && "$caddy_ready" == "true" ]]; then
             return 0
         fi
 
@@ -136,6 +148,8 @@ wait_for_services() {
     fail "Services did not become ready within ${timeout}s"
     [[ "$pool_ready" != "true" ]] && fail "Pool manager not ready"
     [[ "$gw_ready" != "true" ]] && fail "Kernel Gateway not ready"
+    [[ "$api_ready" != "true" ]] && fail "Execution API not ready"
+    [[ "$caddy_ready" != "true" ]] && fail "Caddy not ready"
     echo "  Check logs: $0 $HOST logs"
     return 1
 }
@@ -164,10 +178,33 @@ cmd_deploy() {
     step "Setting up network..."
     ssh "$HOST" "cd $REMOTE_DIR && sudo ./config/setup_network.sh"
 
+    step "Setting up XFS for reflink..."
+    ssh "$HOST" "bash -s" <<'XFS_EOF'
+if ! mountpoint -q /srv/jailer; then
+    if [ -f /var/lib/fc-jailer.xfs ]; then
+        sudo mount -o loop /var/lib/fc-jailer.xfs /srv/jailer
+    else
+        sudo apt-get install -y xfsprogs >/dev/null 2>&1
+        sudo truncate -s 50G /var/lib/fc-jailer.xfs
+        sudo mkfs.xfs -m reflink=1 /var/lib/fc-jailer.xfs >/dev/null 2>&1
+        sudo mount -o loop /var/lib/fc-jailer.xfs /srv/jailer
+    fi
+fi
+sudo mkdir -p /srv/jailer/images /srv/jailer/snapshots
+[ -f /srv/jailer/images/vmlinux ] || sudo cp /opt/firecracker/vmlinux /srv/jailer/images/
+[ -f /srv/jailer/images/rootfs.ext4 ] || sudo cp /opt/firecracker/rootfs.ext4 /srv/jailer/images/
+echo "XFS ready"
+XFS_EOF
+
+    step "Installing kernelspec..."
+    ssh "$HOST" "cd $REMOTE_DIR && uv run jupyter kernelspec install config/kernelspec/ --name python3-firecracker --sys-prefix 2>&1 | tail -1"
+
     step "Installing systemd units..."
     ssh "$HOST" "bash -s" <<INSTALL_EOF
 sudo cp $OPT_DIR/config/fc-pool-manager.service /etc/systemd/system/
 sudo cp $OPT_DIR/config/fc-kernel-gateway.service /etc/systemd/system/
+sudo cp $OPT_DIR/config/fc-execution-api.service /etc/systemd/system/
+sudo cp $OPT_DIR/config/fc-caddy.service /etc/systemd/system/
 sudo systemctl daemon-reload
 INSTALL_EOF
 
@@ -258,7 +295,7 @@ cmd_status() {
 cmd_logs() {
     verify_ssh
     step "Tailing service logs (Ctrl-C to stop)..."
-    ssh "$HOST" "sudo journalctl -u fc-pool-manager -u fc-kernel-gateway -f --no-pager"
+    ssh "$HOST" "sudo journalctl -u fc-pool-manager -u fc-kernel-gateway -u fc-execution-api -u fc-caddy -f --no-pager"
 }
 
 cmd_teardown() {
@@ -283,6 +320,8 @@ cmd_teardown() {
     ssh "$HOST" "bash -s" <<'TEARDOWN_UNITS_EOF'
 sudo rm -f /etc/systemd/system/fc-pool-manager.service
 sudo rm -f /etc/systemd/system/fc-kernel-gateway.service
+sudo rm -f /etc/systemd/system/fc-execution-api.service
+sudo rm -f /etc/systemd/system/fc-caddy.service
 sudo systemctl daemon-reload
 TEARDOWN_UNITS_EOF
 
