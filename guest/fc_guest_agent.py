@@ -164,7 +164,7 @@ def pre_warm_kernel() -> dict:
 
     import secrets
 
-    _kernel_key = secrets.token_hex(32)
+    _kernel_key = ""
     _kernel_ports = dict(_DEFAULT_PORTS)
 
     ip = "0.0.0.0"

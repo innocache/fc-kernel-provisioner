@@ -102,25 +102,26 @@ class WarmPoolProvisioner(FirecrackerProvisioner):
 
         
 
-        if self.vm_id and getattr(self, "kernel_id", None):
-            try:
-                await self._pool_client.bind_kernel(self.vm_id, self.kernel_id)
-            except Exception:
-                pass
-
         kwargs["cmd"] = []
         from jupyter_client.provisioning import KernelProvisionerBase
         result = await KernelProvisionerBase.pre_launch(self, **kwargs)
 
         self.connection_info["ip"] = self.vm_ip
         self.connection_info["transport"] = "tcp"
-        if self.kernel_key and hasattr(self, "parent") and hasattr(self.parent, "session"):
-            self.parent.session.key = self.kernel_key.encode("utf-8")
-            self.connection_info["key"] = self.parent.session.key
-            self.connection_info["signature_scheme"] = self.parent.session.signature_scheme
+        if hasattr(self, "parent") and hasattr(self.parent, "session"):
+            self.parent.session.key = b""
+            self.connection_info["key"] = b""
+            self.connection_info["signature_scheme"] = "hmac-sha256"
+
         if self.kernel_ports:
             for port_name, port_value in self.kernel_ports.items():
                 self.connection_info[port_name] = port_value
+
+        if self.vm_id and getattr(self, "kernel_id", None):
+            try:
+                await self._pool_client.bind_kernel(self.vm_id, self.kernel_id)
+            except Exception:
+                pass
 
         return result
 
