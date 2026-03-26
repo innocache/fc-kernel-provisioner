@@ -40,15 +40,14 @@ def _start_fake_kg():
 
 
 def _start_execution_api():
-    os.environ["GATEWAY_URL"] = f"http://localhost:{_KG_PORT}"
-    os.environ["POOL_SOCKET"] = "/dev/null"
+    kg_url = f"http://localhost:{_KG_PORT}"
+    os.environ["GATEWAY_URL"] = kg_url
 
     from execution_api.server import create_app, SessionManager
-    from unittest.mock import AsyncMock, patch
     import uvicorn
 
     mgr = SessionManager(
-        gateway_url=fake_kg,
+        gateway_url=kg_url,
         default_timeout=30,
         max_sessions=50,
         session_ttl=600,
