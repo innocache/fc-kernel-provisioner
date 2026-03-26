@@ -7,8 +7,10 @@ Three independently deployable applications from the fc-kernel-provisioner monor
 | App | Package | Runs On | Connects To |
 |-----|---------|---------|------------|
 | **Data Analyst Agent** | Docker image `fc-data-analyst` | Anywhere | Execution API (:8000) |
-| **Execution API** | Docker image `fc-execution-api` | Anywhere (near KG) | KG (:8888), Pool Manager (socket), Caddy (:2019) |
+| **Execution API** | Docker image `fc-execution-api` | Anywhere | KG (:8888), Caddy (:2019) |
 | **Infrastructure** | Bare metal via `deploy.sh` | Linux KVM host | Firecracker VMs, network bridge |
+
+Key design decision: **Panel auto-starts at VM boot** (captured in golden snapshot). This eliminates the Execution API → Pool Manager dependency. Dashboard launch is just a Caddy route registration (~5ms) — no vsock, no socket mount.
 
 ## 2. Architecture
 
@@ -23,18 +25,36 @@ Three independently deployable applications from the fc-kernel-provisioner monor
 └──────────────────────┘     └───┬───────────┬──────┘
                                  │WS         │HTTP
                                  ▼           ▼
-                    ┌────────────────┐ ┌──────────┐
-                    │ KG :8888       │ │Caddy:8080│
-                    │ (bare metal)   │ │(bare     │
-                    │ WarmPool       │ │ metal)   │
-                    │ Provisioner    │ └──────────┘
-                    └───────┬───────┘
-                            │Unix socket
-                    ┌───────▼───────┐
-                    │Pool Manager   │
-                    │(bare metal)   │
-                    │Firecracker VMs│
-                    └───────────────┘
+                    ┌────────────────┐ ┌──────────────┐
+                    │ KG :8888       │ │Caddy :8080   │
+                    │ (bare metal)   │ │(bare metal)  │
+                    │ WarmPool       │ │              │
+                    │ Provisioner    │ │ /dash/{sid}/ │
+                    └───────┬───────┘ │  → VM:5006   │
+                            │         └──────────────┘
+                    ┌───────▼───────┐       ↑
+                    │Pool Manager   │       │TCP
+                    │(bare metal)   │       │
+                    │               │ ┌─────┴──────┐
+                    └───────┬───────┘ │ Panel:5006 │
+                            │vsock    │ (auto-start)│
+                    ┌───────▼─────────┴────────────┐
+                    │ Firecracker VM                 │
+                    │ ipykernel:5555 + Panel:5006   │
+                    │ (both in golden snapshot)      │
+                    └───────────────────────────────┘
+```
+
+### Why no Pool Manager connection from Execution API
+
+Panel auto-starts during VM boot and is captured in the golden snapshot. Every restored VM already has Panel running on :5006. The dashboard endpoint just registers a Caddy route — a pure HTTP call. No vsock, no Unix socket, no root privilege needed.
+
+```
+BEFORE (needs Pool Manager socket):
+  POST /dashboard → Exec API → Pool Mgr (vsock) → Guest Agent → start Panel → register Caddy
+  
+AFTER (auto-start, HTTP only):
+  POST /dashboard → Exec API → register Caddy route (Panel already running)
 ```
 
 ## 3. Docker Image: fc-execution-api
@@ -47,6 +67,7 @@ Three independently deployable applications from the fc-kernel-provisioner monor
 ### What's NOT included
 - Pool manager, provisioner, guest agent (bare metal only)
 - Firecracker, jailer, KVM dependencies
+- No pool_client — dashboard uses Caddy HTTP only (Panel auto-started in VM)
 
 ### Dockerfile
 
@@ -66,7 +87,6 @@ RUN pip install --no-cache-dir uv && \
 EXPOSE 8000
 
 ENV GATEWAY_URL=http://host.docker.internal:8888
-ENV POOL_SOCKET=/var/run/fc-pool.sock
 ENV CADDY_ADMIN_URL=http://host.docker.internal:2019
 
 CMD ["uvicorn", "execution_api.server:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
@@ -77,21 +97,17 @@ CMD ["uvicorn", "execution_api.server:create_app", "--factory", "--host", "0.0.0
 | Destination | Protocol | Default | Config |
 |------------|----------|---------|--------|
 | Kernel Gateway | HTTP + WebSocket | `host.docker.internal:8888` | `GATEWAY_URL` |
-| Pool Manager | Unix socket | `/var/run/fc-pool.sock` | `POOL_SOCKET` + volume mount |
 | Caddy admin | HTTP | `host.docker.internal:2019` | `CADDY_ADMIN_URL` |
 
-### Volume mounts
+No volume mounts needed — all connections are standard TCP/HTTP.
 
 ```bash
 docker run -d \
   -p 8000:8000 \
-  -v /var/run/fc-pool.sock:/var/run/fc-pool.sock \
   -e GATEWAY_URL=http://host.docker.internal:8888 \
   -e CADDY_ADMIN_URL=http://host.docker.internal:2019 \
   fc-execution-api
 ```
-
-The Unix socket mount is needed for the dashboard vsock proxy (pool manager routes dashboard commands to VMs). If dashboards are not needed, the socket mount can be omitted.
 
 ## 4. Docker Image: fc-data-analyst
 
@@ -145,13 +161,9 @@ services:
       dockerfile: execution_api/Dockerfile
     ports:
       - "8000:8000"
-    volumes:
-      - /var/run/fc-pool.sock:/var/run/fc-pool.sock
     environment:
       - GATEWAY_URL=http://host.docker.internal:8888
-      - POOL_SOCKET=/var/run/fc-pool.sock
       - CADDY_ADMIN_URL=http://host.docker.internal:2019
-      - DASHBOARD_PORT=5006
       - DASHBOARD_ALLOWED_ORIGINS=localhost:8080,localhost:8501
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -200,7 +212,107 @@ Browser (:8501) → data-analyst container → execution-api container (:8000)
 
 The `data-analyst` container talks to `execution-api` by service name (Docker DNS). The `execution-api` container talks to the KG via `host.docker.internal` (host network).
 
-## 6. Infrastructure (App 3) — No Docker
+## 6. Auto-Start Panel Design
+
+### What changes in the VM boot
+
+The guest agent's `pre_warm_kernel()` is extended to also start Panel:
+
+```python
+def pre_warm_kernel() -> dict:
+    # Start ipykernel (existing)
+    _kernel_key = secrets.token_hex(32)
+    _kernel_ports = dict(_DEFAULT_PORTS)
+    pid = start_kernel(_kernel_ports, _kernel_key, "0.0.0.0")
+    
+    # Start Panel (new)
+    subprocess.Popen([
+        sys.executable, "-m", "panel", "serve",
+        "--port", "5006", "--address", "0.0.0.0",
+        "--allow-websocket-origin", "*",
+        "--prefix", "/dash/placeholder",
+    ])
+    
+    return {"key": _kernel_key, "ports": _kernel_ports, "pid": pid, "panel_port": 5006}
+```
+
+### Golden snapshot captures both
+
+```
+Boot fresh VM → guest agent → start kernel + start Panel → both running
+  → pause → snapshot/create → golden snapshot includes:
+    - ipykernel process (warm, imports loaded)
+    - Panel process (warm, Bokeh loaded)
+    - Both listening on their ports
+
+Restore from snapshot → VM resumes → both processes alive → ready
+```
+
+### What changes in Execution API
+
+Dashboard endpoint becomes HTTP-only (no vsock):
+
+```python
+@app.post("/sessions/{session_id}/dashboard")
+async def launch_dashboard(session_id, req: DashboardRequest):
+    entry = session_manager.get(session_id)
+    
+    # Panel is already running on vm_ip:5006
+    # Just register Caddy route with the dashboard code path
+    app_id = uuid.uuid4().hex[:12]
+    await caddy.add_route(session_id, f"{entry.vm_ip}:5006")
+    
+    return DashboardResponse(
+        url=f"/dash/{session_id}/dash_{app_id}",
+        session_id=session_id,
+        app_id=app_id,
+    )
+```
+
+### What gets removed from Execution API
+
+- `pool_client` import and usage
+- `_pool_client` module-level variable
+- `POOL_SOCKET` env var
+- All `pool_client.launch_dashboard()` / `pool_client.stop_dashboard()` calls
+- Pool Manager vsock proxy endpoints (can remain in pool manager but unused by API)
+
+### Panel prefix handling
+
+The golden snapshot starts Panel with `--prefix /dash/placeholder`. On dashboard launch, the Caddy route maps `/dash/{session_id}/*` to the VM. Panel doesn't need the session-specific prefix at startup — Caddy handles the path rewriting.
+
+For dashboard code deployment: the `POST /dashboard` endpoint sends the code to the VM via the **Execution API's existing code execution path** (not vsock):
+
+```python
+# Execute the dashboard code in the kernel, which writes it to Panel's watched directory
+code = f'''
+import os
+os.makedirs("/apps", exist_ok=True)
+with open("/apps/dash_{app_id}.py", "w") as f:
+    f.write("""{req.code}""")
+print("dashboard deployed")
+'''
+await entry.session.execute(code)
+```
+
+This uses the same `SandboxSession.execute()` path as code execution — no new connections needed.
+
+### Memory overhead
+
+| Config | Per-VM Memory | Pool of 5 | Pool of 30 |
+|--------|-------------|-----------|-----------|
+| Kernel only | ~200MB | ~1GB | ~6GB |
+| Kernel + Panel | ~350MB | ~1.75GB | ~10.5GB |
+| Delta | +150MB | +750MB | +4.5GB |
+
+Configurable via `fc-pool.yaml`:
+```yaml
+pool:
+  auto_start_panel: true    # false to disable
+  vm_mem_mib: 768           # increase from 512 for Panel
+```
+
+## 7. Infrastructure (App 3) — No Docker
 
 The infrastructure components (pool manager, KG, Caddy, Firecracker) run on bare metal via systemd services managed by `deploy.sh`:
 
@@ -221,7 +333,7 @@ scripts/deploy.sh user@host teardown   # complete removal
 | vsock | AF_VSOCK sockets are in the host's jailer chroot paths |
 | Performance | Any container overhead on the VM management path defeats the 37ms session create |
 
-## 7. pyproject.toml Changes
+## 8. pyproject.toml Changes
 
 Split dependency groups for independent installation:
 
@@ -261,7 +373,7 @@ dev = [
 ]
 ```
 
-## 8. Build Commands
+## 9. Build Commands
 
 ```bash
 # Build both images
@@ -276,14 +388,13 @@ docker tag fc-execution-api registry.example.com/fc-execution-api:v1.0.0
 docker push registry.example.com/fc-execution-api:v1.0.0
 ```
 
-## 9. Environment Variables Reference
+## 10. Environment Variables Reference
 
 ### fc-execution-api
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GATEWAY_URL` | `http://localhost:8888` | Kernel Gateway endpoint |
-| `POOL_SOCKET` | `/var/run/fc-pool.sock` | Pool manager Unix socket path |
 | `CADDY_ADMIN_URL` | `http://localhost:2019` | Caddy admin API |
 | `PORT` | `8000` | API listen port |
 | `SESSION_TTL` | `600` | Session idle timeout (seconds) |
@@ -302,7 +413,7 @@ docker push registry.example.com/fc-execution-api:v1.0.0
 | `OPENAI_API_KEY` | — | Required for OpenAI provider |
 | `CADDY_BASE_URL` | `http://localhost:8080` | Dashboard iframe base URL |
 
-## 10. File Inventory
+## 11. File Inventory
 
 | File | New/Modify | Responsibility |
 |------|-----------|---------------|
