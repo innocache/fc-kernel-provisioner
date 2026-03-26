@@ -10,17 +10,13 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-import aiohttp
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from fc_provisioner.pool_client import PoolClient
 from sandbox_client import ExecutionResult, LocalArtifactStore, SandboxSession
-
-from .caddy_client import CaddyClient, _vsock_request
 from .models import (
     CreateSessionRequest,
     CreateSessionResponse,
@@ -47,28 +43,7 @@ ARTIFACT_BASE_DIR = os.environ.get("ARTIFACT_BASE_DIR")
 ARTIFACT_URL_PREFIX = os.environ.get("ARTIFACT_URL_PREFIX")
 SERVE_ARTIFACTS = os.environ.get("SERVE_ARTIFACTS", "true").lower() == "true"
 PORT = int(os.environ.get("PORT", "8000"))
-POOL_SOCKET = os.environ.get("POOL_SOCKET", "/var/run/fc-pool.sock")
-CADDY_ADMIN_URL = os.environ.get("CADDY_ADMIN_URL", "http://localhost:2019")
-DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", "5006"))
-DASHBOARD_ALLOWED_ORIGINS = [
-    o.strip() for o in
-    os.environ.get("DASHBOARD_ALLOWED_ORIGINS", "localhost:8080,127.0.0.1:8080").split(",")
-    if o.strip()
-]
 
-caddy = CaddyClient(admin_url=CADDY_ADMIN_URL)
-
-
-async def _lookup_vm_by_kernel(pool_socket: str, kernel_id: str | None) -> dict[str, str]:
-    if not kernel_id:
-        raise RuntimeError("kernel_id unavailable")
-    conn = aiohttp.UnixConnector(path=pool_socket)
-    async with aiohttp.ClientSession(connector=conn) as http:
-        resp = await http.get(f"http://localhost/api/vms/by-kernel/{kernel_id}")
-        if resp.status != 200:
-            body = await resp.text()
-            raise RuntimeError(f"vm lookup failed ({resp.status}): {body}")
-        return await resp.json()
 
 
 # ── Session Manager ──────────────────────────────────────────────────────
@@ -81,9 +56,6 @@ class SessionEntry:
     created_at: float
     last_active: float
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    vm_id: str | None = None
-    vm_ip: str | None = None
-    vsock_path: str | None = None
     active_dashboard: str | None = None
 
 
@@ -147,17 +119,6 @@ class SessionManager:
                     pass
                 raise
 
-            vm_id = None
-            vm_ip = None
-            vsock_path = None
-            try:
-                vm_info = await _lookup_vm_by_kernel(POOL_SOCKET, getattr(session, "_kernel_id", None))
-                vm_id = vm_info.get("vm_id")
-                vm_ip = vm_info.get("ip")
-                vsock_path = vm_info.get("vsock_path")
-            except Exception:
-                logger.debug("VM lookup failed after session start", exc_info=True)
-
             session_id = uuid.uuid4().hex
             now = time.time()
             entry = SessionEntry(
@@ -165,9 +126,6 @@ class SessionManager:
                 session_id=session_id,
                 created_at=now,
                 last_active=now,
-                vm_id=vm_id,
-                vm_ip=vm_ip,
-                vsock_path=vsock_path,
                 active_dashboard=None,
             )
             self._sessions[session_id] = entry
@@ -182,19 +140,7 @@ class SessionManager:
             return False
 
         async with entry.lock:
-            if entry.vm_id and entry.active_dashboard and _pool_client:
-                try:
-                    await _pool_client.stop_dashboard(entry.vm_id)
-                except Exception:
-                    logger.debug("Failed to stop dashboard during delete", exc_info=True)
-
-                try:
-                    await caddy.remove_route(session_id)
-                except Exception:
-                    logger.debug("Failed to remove dashboard route during delete", exc_info=True)
-
-                entry.active_dashboard = None
-
+            entry.active_dashboard = None
             try:
                 await entry.session.stop()
             except Exception:
@@ -283,16 +229,9 @@ _cleanup_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_CLEANUPS)
 _cleanup_tasks: set[asyncio.Task] = set()
 
 
-_pool_client: PoolClient | None = None
-
-
-def create_app(session_manager: SessionManager | None = None, pool_client: PoolClient | None = None) -> FastAPI:
-    global _pool_client
+def create_app(session_manager: SessionManager | None = None) -> FastAPI:
     if session_manager is None:
         session_manager = SessionManager()
-    if pool_client is None:
-        pool_client = PoolClient(POOL_SOCKET)
-    _pool_client = pool_client
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -409,47 +348,30 @@ def create_app(session_manager: SessionManager | None = None, pool_client: PoolC
         entry = session_manager.get(session_id)
         if entry is None:
             raise HTTPException(status_code=404, detail="session not found")
-        if entry.vm_id is None or entry.vm_ip is None:
-            raise HTTPException(status_code=503, detail="VM info not available")
+        kernel_id = getattr(entry.session, "_kernel_id", None)
+        if kernel_id is None:
+            raise HTTPException(status_code=503, detail="kernel not available")
+        entry.last_active = time.time()
 
         async with entry.lock:
-            if entry.active_dashboard is not None:
-                try:
-                    await pool_client.stop_dashboard(entry.vm_id)
-                except Exception:
-                    logger.debug("Failed to stop existing dashboard before replacement", exc_info=True)
-
             app_id = uuid.uuid4().hex[:12]
+            escaped = req.code.replace("\\", "\\\\").replace("'''", "\\'\\'\\'")
             try:
-                resp = await pool_client.launch_dashboard(
-                    entry.vm_id,
-                    {
-                        "action": "launch_dashboard",
-                        "code": req.code,
-                        "port": DASHBOARD_PORT,
-                        "app_id": app_id,
-                        "session_id": session_id,
-                        "allowed_origins": DASHBOARD_ALLOWED_ORIGINS,
-                    },
+                await entry.session.execute(
+                    "import os, tempfile\n"
+                    "os.makedirs('/apps', exist_ok=True)\n"
+                    f"code = '''{escaped}'''\n"
+                    "tmp = tempfile.mktemp(dir='/apps', suffix='.py')\n"
+                    "with open(tmp, 'w') as f: f.write(code)\n"
+                    f"os.replace(tmp, '/apps/dash_{app_id}.py')\n"
+                    "print('dashboard deployed')"
                 )
             except Exception as exc:
-                raise HTTPException(status_code=503, detail=f"dashboard launch error: {exc}")
-
-            if resp.get("status") != "ok":
-                raise HTTPException(status_code=500, detail=resp.get("message", "launch failed"))
-
-            try:
-                await caddy.add_route(session_id, f"{entry.vm_ip}:{DASHBOARD_PORT}")
-            except Exception as exc:
-                try:
-                    await pool_client.stop_dashboard(entry.vm_id)
-                except Exception:
-                    pass
-                raise HTTPException(status_code=503, detail=f"caddy route error: {exc}")
+                raise HTTPException(status_code=503, detail=f"dashboard deploy error: {exc}")
 
             entry.active_dashboard = app_id
             return DashboardResponse(
-                url=f"/dash/{session_id}/dash_{app_id}",
+                url=f"/dash/{kernel_id}/app",
                 session_id=session_id,
                 app_id=app_id,
             )
@@ -459,19 +381,16 @@ def create_app(session_manager: SessionManager | None = None, pool_client: PoolC
         entry = session_manager.get(session_id)
         if entry is None:
             raise HTTPException(status_code=404, detail="session not found")
+        entry.last_active = time.time()
 
         async with entry.lock:
-            if entry.vm_id and entry.active_dashboard:
-                try:
-                    await pool_client.stop_dashboard(entry.vm_id)
-                except Exception:
-                    logger.debug("Failed to stop dashboard", exc_info=True)
-
             try:
-                await caddy.remove_route(session_id)
+                await entry.session.execute(
+                    "import glob, os\n"
+                    "for f in glob.glob('/apps/dash_*.py'): os.remove(f)"
+                )
             except Exception:
-                logger.debug("Failed to remove Caddy route", exc_info=True)
-
+                pass
             entry.active_dashboard = None
             return DeleteResponse()
 

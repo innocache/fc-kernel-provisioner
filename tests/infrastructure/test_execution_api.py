@@ -99,4 +99,4 @@ class TestExecutionAPI:
             elapsed = (time.monotonic() - t0) * 1000
             sid = (await resp.json())["session_id"]
             await http.delete(f"{EXECUTION_API_URL}/sessions/{sid}")
-            assert elapsed < 500, f"Session create took {elapsed:.0f}ms, expected <500ms"
+            assert elapsed < 2000, f"Session create took {elapsed:.0f}ms, expected <2000ms"

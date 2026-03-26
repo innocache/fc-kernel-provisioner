@@ -97,7 +97,7 @@ async def handle_bind_kernel(request: web.Request) -> web.Response:
         return web.json_response({"error": "kernel_id required"}, status=400)
     if vm_id not in manager._vms:
         return web.json_response({"error": "VM not found"}, status=404)
-    manager.bind_kernel(vm_id, kernel_id)
+    await manager.bind_kernel(vm_id, kernel_id)
     return web.json_response({"ok": True})
 
 

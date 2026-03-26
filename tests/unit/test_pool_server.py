@@ -10,7 +10,7 @@ class DummyManager:
         self._vms = {}
         self._kernel_to_vm = {}
 
-    def bind_kernel(self, vm_id, kernel_id):
+    async def bind_kernel(self, vm_id, kernel_id):
         self._kernel_to_vm[kernel_id] = vm_id
 
     def vm_by_kernel(self, kernel_id):

@@ -3,7 +3,7 @@ pool:
   max_vms: 30
   replenish_threshold: 2
   health_check_interval: 30
-  vm_idle_timeout: 600
+  vm_idle_timeout: 900
   snapshot_dir: /srv/jailer/snapshots
 
 vm_defaults:

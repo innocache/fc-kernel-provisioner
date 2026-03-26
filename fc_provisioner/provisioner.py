@@ -50,7 +50,6 @@ class FirecrackerProvisioner(KernelProvisionerBase):
     vm_id: Optional[str] = None
     vm_ip: Optional[str] = None
     vsock_path: Optional[str] = None
-    kernel_key: Optional[str] = None
     kernel_ports: Optional[dict[str, int]] = None
     process: Optional[FirecrackerProcess] = None
     pool_client: Optional[PoolClient] = None
@@ -82,11 +81,7 @@ class FirecrackerProvisioner(KernelProvisionerBase):
         self.vm_id = vm["id"]
         self.vm_ip = vm["ip"]
         self.vsock_path = vm["vsock_path"]
-        self.kernel_key = vm.get("kernel_key")
         self.kernel_ports = vm.get("kernel_ports")
-
-        if self.kernel_key and hasattr(self, "parent") and hasattr(self.parent, "session"):
-            self.parent.session.key = self.kernel_key.encode("utf-8")
 
         if self.vm_id and getattr(self, "kernel_id", None):
             try:
@@ -104,8 +99,9 @@ class FirecrackerProvisioner(KernelProvisionerBase):
         # _equal_connections fails (str != bytes, None != "hmac-sha256").
         self.connection_info["ip"] = self.vm_ip
         self.connection_info["transport"] = "tcp"
+        self.connection_info["key"] = b""
         if hasattr(self, "parent") and hasattr(self.parent, "session"):
-            self.connection_info["key"] = self.parent.session.key
+            self.parent.session.key = b""
             self.connection_info["signature_scheme"] = (
                 self.parent.session.signature_scheme
             )
@@ -122,12 +118,6 @@ class FirecrackerProvisioner(KernelProvisionerBase):
         """
         return {k: self.connection_info.get(k, self._DEFAULT_PORTS[k]) for k in self.PORT_NAMES}
 
-    def _connection_key_text(self) -> str:
-        key = self.connection_info.get("key", "")
-        if isinstance(key, bytes):
-            return key.decode()
-        return key
-
     async def _start_guest_kernel(self) -> None:
         """Send start_kernel to guest agent and update connection info."""
         if self.vsock_path is None:
@@ -135,7 +125,7 @@ class FirecrackerProvisioner(KernelProvisionerBase):
         if self.vm_id is None or self.pool_client is None:
             raise RuntimeError("Cannot start guest kernel before VM acquisition")
 
-        if self.kernel_key:
+        if self.kernel_ports:
             if self.vm_ip:
                 self.connection_info["ip"] = self.vm_ip
             self.connection_info["transport"] = "tcp"
@@ -144,12 +134,11 @@ class FirecrackerProvisioner(KernelProvisionerBase):
             self.process = FirecrackerProcess(self.vm_id, self.pool_client)
             return
 
-        key = self._connection_key_text()
         ports = self._kernel_ports()
 
         resp = await vsock_request(
             self.vsock_path,
-            {"action": "start_kernel", "ports": ports, "key": key, "ip": self.vm_ip},
+            {"action": "start_kernel", "ports": ports, "key": "", "ip": self.vm_ip},
             timeout=120,
         )
 
@@ -216,7 +205,7 @@ class FirecrackerProvisioner(KernelProvisionerBase):
                 {
                     "action": "restart_kernel",
                     "ports": self._kernel_ports(),
-                    "key": self._connection_key_text(),
+                    "key": "",
                 },
                 timeout=120,
             )
@@ -229,7 +218,6 @@ class FirecrackerProvisioner(KernelProvisionerBase):
             self.vm_id = None
             self.vm_ip = None
             self.vsock_path = None
-            self.kernel_key = None
             self.kernel_ports = None
             self.process = None
 

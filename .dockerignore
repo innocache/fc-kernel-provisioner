@@ -1,0 +1,14 @@
+.git
+.venv
+.pytest_cache
+.chainlit
+__pycache__
+*.pyc
+tests/
+docs/
+guest/
+fc_pool_manager/
+fc_provisioner/
+config/
+scripts/
+*.md

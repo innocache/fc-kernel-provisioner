@@ -81,7 +81,7 @@ async def test_restore_reattaches_tap_after_reconfig(tmp_path):
     api = SimpleNamespace(load_snapshot=AsyncMock(), resume=AsyncMock())
     async def _vsock_side_effect(*_args, **_kwargs):
         events.append("reconfig")
-        return {"status": "ok", "key": "testkey", "ports": {}, "running": True}
+        return {"status": "ok", "ports": {}, "running": True}
 
     vsock = AsyncMock(side_effect=_vsock_side_effect)
 
@@ -232,7 +232,7 @@ async def test_full_restore_sequence_ordering(tmp_path):
 
     async def vsock_side_effect(*_, **__):
         events.append("vsock_reconfig")
-        return {"status": "ok", "key": "testkey", "ports": {}, "running": True}
+        return {"status": "ok", "ports": {}, "running": True}
 
     async def attach_side_effect(*_):
         events.append("attach")

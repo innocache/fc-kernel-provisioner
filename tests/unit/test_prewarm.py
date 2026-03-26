@@ -103,7 +103,6 @@ async def test_boot_vm_prewarms_kernel_after_guest_ready(tmp_path):
             assert timeout == 120
             return {
                 "status": "ok",
-                "key": "abc123",
                 "ports": {"shell_port": 5555},
             }
         raise AssertionError(f"Unexpected action: {payload}")
@@ -118,7 +117,7 @@ async def test_boot_vm_prewarms_kernel_after_guest_ready(tmp_path):
     assert actions == ["pre_warm_kernel"]
 
 
-async def test_boot_vm_stores_kernel_key_and_ports(tmp_path):
+async def test_boot_vm_stores_kernel_ports(tmp_path):
     manager = PoolManager(make_test_config(tmp_path))
     manager._snapshot_valid = False
     manager._prepare_jail_root = AsyncMock()
@@ -131,12 +130,10 @@ async def test_boot_vm_stores_kernel_key_and_ports(tmp_path):
     with patch("fc_pool_manager.vsock.vsock_request", new_callable=AsyncMock) as mock_vsock:
         mock_vsock.return_value = {
             "status": "ok",
-            "key": "warm-key-123",
             "ports": {"shell_port": 5501, "iopub_port": 5502},
         }
         vm = await manager._boot_vm(use_snapshot=False)
 
-    assert vm.kernel_key == "warm-key-123"
     assert vm.kernel_ports == {"shell_port": 5501, "iopub_port": 5502}
 
 
@@ -164,7 +161,6 @@ async def test_restore_from_snapshot_gets_kernel_info(tmp_path):
             {
                 "status": "ok",
                 "running": True,
-                "key": "restored-key",
                 "ports": {"shell_port": 5601, "hb_port": 5605},
             },
         ]
@@ -172,20 +168,17 @@ async def test_restore_from_snapshot_gets_kernel_info(tmp_path):
 
     actions = [call.args[1]["action"] for call in mock_vsock.await_args_list]
     assert actions == ["reconfigure_network", "get_kernel_info"]
-    assert vm.kernel_key == "restored-key"
     assert vm.kernel_ports == {"shell_port": 5601, "hb_port": 5605}
 
 
 async def test_acquire_returns_kernel_info_when_available(tmp_path):
     manager = PoolManager(make_test_config(tmp_path))
     vm = make_vm(state=VMState.IDLE)
-    vm.kernel_key = "warm-key"
     vm.kernel_ports = {"shell_port": 5701}
     manager._vms[vm.vm_id] = vm
 
     result = await manager._acquire_inner(vcpu=1, mem_mib=512)
 
-    assert result["kernel_key"] == "warm-key"
     assert result["kernel_ports"] == {"shell_port": 5701}
 
 
@@ -204,7 +197,6 @@ async def test_prewarm_failure_is_nonfatal_for_boot(tmp_path):
         vm = await manager._boot_vm(use_snapshot=False)
 
     assert vm.state == VMState.IDLE
-    assert vm.kernel_key is None
     assert vm.kernel_ports is None
 
 
@@ -233,7 +225,6 @@ async def test_restore_kernel_info_failure_is_nonfatal(tmp_path):
         ]
         await manager._restore_from_snapshot(vm)
 
-    assert vm.kernel_key is None
     assert vm.kernel_ports is None
 
 
@@ -247,7 +238,7 @@ async def test_ephemeral_vm_prewarms_before_snapshot(tmp_path):
     manager._network.apply_vm_rules = AsyncMock()
 
     with patch("fc_pool_manager.vsock.vsock_request", new_callable=AsyncMock) as mock_vsock:
-        mock_vsock.return_value = {"status": "ok", "key": "snap-key", "ports": {}}
+        mock_vsock.return_value = {"status": "ok", "ports": {}}
         await manager._boot_ephemeral_vm()
 
     actions = [call.args[1]["action"] for call in mock_vsock.await_args_list]
@@ -273,7 +264,6 @@ async def test_provisioner_uses_prewarm_key_and_ports(MockPoolClient):
         "id": "vm-abc12345",
         "ip": "172.16.0.2",
         "vsock_path": "/srv/jailer/firecracker/vm-abc12345/root/v.sock",
-        "kernel_key": "prewarmed-key",
         "kernel_ports": {
             "shell_port": 6001,
             "iopub_port": 6002,
@@ -293,8 +283,8 @@ async def test_provisioner_uses_prewarm_key_and_ports(MockPoolClient):
     ):
         await p.pre_launch()
 
-    assert p.parent.session.key == b"prewarmed-key"
-    assert p.connection_info["key"] == b"prewarmed-key"
+    assert p.parent.session.key == b""
+    assert p.connection_info["key"] == b""
     assert p.connection_info["shell_port"] == 6001
     assert p.connection_info["hb_port"] == 6005
 
@@ -306,7 +296,6 @@ async def test_launch_kernel_skips_start_when_prewarmed(mock_vsock):
     p.vm_ip = "172.16.0.33"
     p.vsock_path = "/tmp/v.sock"
     p.pool_client = MagicMock()
-    p.kernel_key = "prewarmed-key"
     p.kernel_ports = {
         "shell_port": 6101,
         "iopub_port": 6102,

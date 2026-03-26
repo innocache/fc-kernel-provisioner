@@ -19,16 +19,20 @@ class CaddyClient:
     def _route_id(self, session_id: str) -> str:
         return f"dashboard_{session_id}"
 
-    def _build_route(self, session_id: str, upstream: str) -> dict[str, Any]:
+    def _build_route(self, route_id: str, upstream: str) -> dict[str, Any]:
         return {
-            "@id": self._route_id(session_id),
-            "match": [{"path": [f"/dash/{session_id}/*"]}],
+            "@id": self._route_id(route_id),
+            "match": [{"path": [f"/dash/{route_id}/*"]}],
             "handle": [
+                {
+                    "handler": "rewrite",
+                    "strip_path_prefix": f"/dash/{route_id}",
+                },
                 {
                     "handler": "reverse_proxy",
                     "upstreams": [{"dial": upstream}],
                     "flush_interval": -1,
-                }
+                },
             ],
         }
 
@@ -41,10 +45,10 @@ class CaddyClient:
             return next(iter(servers))
         return "srv0"
 
-    async def add_route(self, session_id: str, upstream: str) -> None:
-        route = self._build_route(session_id, upstream)
-        route_id = self._route_id(session_id)
-        put_url = f"{self._admin_url}/id/{route_id}"
+    async def add_route(self, route_id: str, upstream: str) -> None:
+        route = self._build_route(route_id, upstream)
+        rid = self._route_id(route_id)
+        put_url = f"{self._admin_url}/id/{rid}"
 
         async with aiohttp.ClientSession() as http:
             resp = await http.put(put_url, json=route)
@@ -56,9 +60,9 @@ class CaddyClient:
                 body = await resp.text()
                 raise RuntimeError(f"Caddy add_route failed ({resp.status}): {body}")
 
-    async def remove_route(self, session_id: str) -> None:
-        route_id = self._route_id(session_id)
-        del_url = f"{self._admin_url}/id/{route_id}"
+    async def remove_route(self, route_id: str) -> None:
+        rid = self._route_id(route_id)
+        del_url = f"{self._admin_url}/id/{rid}"
         async with aiohttp.ClientSession() as http:
             resp = await http.delete(del_url)
             if resp.status not in (200, 204, 404):

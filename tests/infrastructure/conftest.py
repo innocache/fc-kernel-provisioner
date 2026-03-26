@@ -150,6 +150,26 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(skip)
 
 
+@pytest.fixture(autouse=True)
+async def cleanup_sessions():
+    """Delete all Execution API sessions after each test to prevent leaks."""
+    yield
+    try:
+        import aiohttp
+        api_url = os.environ.get("EXECUTION_API_URL", "http://localhost:8000")
+        async with aiohttp.ClientSession() as http:
+            resp = await http.get(f"{api_url}/sessions")
+            if resp.status == 200:
+                sessions = await resp.json()
+                for s in sessions:
+                    try:
+                        await http.delete(f"{api_url}/sessions/{s['session_id']}")
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+
 def pytest_unconfigure(config):
     if _PROCS:
         _stop_services()

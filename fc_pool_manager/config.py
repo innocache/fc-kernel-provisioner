@@ -13,6 +13,7 @@ class PoolConfig:
     health_check_interval: int
     vm_idle_timeout: int
     snapshot_dir: str
+    caddy_admin_url: str
 
     vm_vcpu: int
     vm_mem_mib: int
@@ -49,6 +50,7 @@ class PoolConfig:
             health_check_interval=pool.get("health_check_interval", 30),
             vm_idle_timeout=pool.get("vm_idle_timeout", 600),
             snapshot_dir=pool.get("snapshot_dir", "/var/lib/fc-snapshots"),
+            caddy_admin_url=pool.get("caddy_admin_url", "http://localhost:2019"),
             vm_vcpu=vm["vcpu"],
             vm_mem_mib=vm["mem_mib"],
             vm_kernel=vm["kernel"],

@@ -29,7 +29,6 @@ panel_proc = None
 boot_time = time.monotonic()
 _APPS_DIR = "/apps"
 
-_kernel_key: str | None = None
 _kernel_ports: dict | None = None
 
 _DEFAULT_PORTS = {
@@ -64,13 +63,13 @@ def with_log_context(message: str) -> str:
     return f"{message}\n--- ipykernel log tail ---\n{log_tail}"
 
 
-def write_connection_file(path: str, ports: dict, key: str, ip: str) -> None:
+def write_connection_file(path: str, ports: dict, ip: str) -> None:
     """Write a Jupyter kernel connection file to *path*."""
     data = {
         "ip": "0.0.0.0",
         "transport": "tcp",
         "signature_scheme": "hmac-sha256",
-        "key": key,
+        "key": "",
         "kernel_name": "python3",
     }
     data.update(ports)
@@ -103,7 +102,7 @@ def wait_for_kernel_ports(ip: str, ports: dict, timeout: float = 90.0, proc=None
     raise RuntimeError(f"kernel ports did not open within {timeout}s: {pending}")
 
 
-def start_kernel(ports: dict, key: str, ip: str) -> int:
+def start_kernel(ports: dict, ip: str) -> int:
     """Kill any existing kernel, write connection file, spawn ipykernel.
 
     Returns the PID of the new kernel process.
@@ -119,7 +118,7 @@ def start_kernel(ports: dict, key: str, ip: str) -> int:
             kernel_proc.wait()
         kernel_proc = None
 
-    write_connection_file(_CONN_FILE, ports, key, ip)
+    write_connection_file(_CONN_FILE, ports, ip)
 
     python = sys.executable or "/usr/bin/python3"
     env = os.environ.copy()
@@ -155,23 +154,55 @@ def start_kernel(ports: dict, key: str, ip: str) -> int:
     return kernel_proc.pid
 
 
+_DISPATCHER_PATH = "/opt/agent/dispatcher.py"
+_dispatcher_proc = None
+
+
 def pre_warm_kernel() -> dict:
-    global _kernel_key, _kernel_ports, kernel_proc
+    global _kernel_ports, kernel_proc, _dispatcher_proc
 
-    import secrets
-
-    _kernel_key = secrets.token_hex(32)
     _kernel_ports = dict(_DEFAULT_PORTS)
 
     ip = "0.0.0.0"
-    pid = start_kernel(_kernel_ports, _kernel_key, ip)
+    pid = start_kernel(_kernel_ports, ip)
 
-    return {"key": _kernel_key, "ports": _kernel_ports, "pid": pid}
+    if os.path.isfile(_DISPATCHER_PATH):
+        if _dispatcher_proc is not None and _dispatcher_proc.poll() is None:
+            _dispatcher_proc.terminate()
+            try:
+                _dispatcher_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _dispatcher_proc.kill()
+                _dispatcher_proc.wait()
+        os.makedirs("/apps", exist_ok=True)
+        python = sys.executable or "/usr/bin/python3"
+        _dispatcher_proc = subprocess.Popen(
+            [python, _DISPATCHER_PATH],
+            stdout=open("/tmp/dispatcher.log", "w"),
+            stderr=subprocess.STDOUT,
+        )
+        _wait_for_dispatcher()
+
+    return {"ports": _kernel_ports, "pid": pid, "panel_port": 5006}
+
+
+def _wait_for_dispatcher(timeout: float = 60.0) -> None:
+    import socket as _socket
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            s.settimeout(1)
+            s.connect(("127.0.0.1", 5006))
+            s.close()
+            return
+        except OSError:
+            time.sleep(0.5)
+    raise RuntimeError("dispatcher did not bind to port 5006 within timeout")
 
 
 def get_kernel_info() -> dict:
     return {
-        "key": _kernel_key,
         "ports": _kernel_ports,
         "running": kernel_proc is not None and kernel_proc.poll() is None,
     }
@@ -331,10 +362,9 @@ def handle_message(data: bytes) -> bytes:
 
     if action in ("start_kernel", "restart_kernel"):
         ports = msg.get("ports", {})
-        key = msg.get("key", "")
         ip = msg.get("ip", "127.0.0.1")
         try:
-            pid = start_kernel(ports, key, ip)
+            pid = start_kernel(ports, ip)
             return _encode_response({"status": "ready", "pid": pid})
         except Exception as exc:
             return _encode_response({"status": "error", "message": str(exc)})

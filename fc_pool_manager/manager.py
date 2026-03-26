@@ -8,6 +8,7 @@ import shutil
 import time
 from typing import Any
 
+from .caddy_client import CaddyClient
 from .config import PoolConfig
 from .firecracker_api import FirecrackerAPI
 from .metrics import (
@@ -41,6 +42,7 @@ class PoolManager:
             vm_ip_start=config.vm_ip_start,
         )
         self._cid_alloc = CIDAllocator()
+        self._caddy = CaddyClient(admin_url=config.caddy_admin_url)
         self._boot_lock = asyncio.Lock()
         self._acquire_lock = asyncio.Lock()
         self._kernel_to_vm: dict[str, str] = {}
@@ -78,8 +80,14 @@ class PoolManager:
         counts["max"] = self._config.max_vms
         return counts
 
-    def bind_kernel(self, vm_id: str, kernel_id: str) -> None:
+    async def bind_kernel(self, vm_id: str, kernel_id: str) -> None:
         self._kernel_to_vm[kernel_id] = vm_id
+        vm = self._vms.get(vm_id)
+        if vm:
+            try:
+                await self._caddy.add_route(kernel_id, f"{vm.ip}:5006")
+            except Exception as exc:
+                logger.warning("Failed to register Caddy route for kernel %s: %s", kernel_id, exc)
 
     def vm_by_kernel(self, kernel_id: str) -> dict[str, Any] | None:
         vm_id = self._kernel_to_vm.get(kernel_id)
@@ -135,8 +143,7 @@ class PoolManager:
                         "ip": vm.ip,
                         "vsock_path": vm.vsock_path,
                     }
-                    if vm.kernel_key and vm.kernel_ports:
-                        result["kernel_key"] = vm.kernel_key
+                    if vm.kernel_ports:
                         result["kernel_ports"] = vm.kernel_ports
                     return result
 
@@ -152,8 +159,7 @@ class PoolManager:
                 "ip": vm.ip,
                 "vsock_path": vm.vsock_path,
             }
-            if vm.kernel_key and vm.kernel_ports:
-                result["kernel_key"] = vm.kernel_key
+            if vm.kernel_ports:
                 result["kernel_ports"] = vm.kernel_ports
             return result
 
@@ -241,27 +247,19 @@ class PoolManager:
                 await self._restore_from_snapshot(vm)
             else:
                 await self._full_boot(vm)
-
-            await self._wait_for_guest_agent(vm)
-
-            from .vsock import vsock_request
-            try:
-                resp = await vsock_request(
-                    vm.vsock_path,
-                    {"action": "pre_warm_kernel"},
-                    timeout=120,
-                )
-                if resp.get("status") == "ok":
-                    vm.kernel_key = resp["key"]
-                    vm.kernel_ports = resp["ports"]
-                    key_preview = vm.kernel_key[:8] if vm.kernel_key else ""
-                    logger.info(
-                        "Pre-warmed kernel for %s (key=%s...)",
-                        vm.vm_id,
-                        key_preview,
+                await self._wait_for_guest_agent(vm)
+                from .vsock import vsock_request
+                try:
+                    resp = await vsock_request(
+                        vm.vsock_path,
+                        {"action": "pre_warm_kernel"},
+                        timeout=120,
                     )
-            except Exception as exc:
-                logger.warning("Failed to pre-warm kernel for %s: %s", vm.vm_id, exc)
+                    if resp.get("status") == "ok":
+                        vm.kernel_ports = resp["ports"]
+                        logger.info("Pre-warmed kernel for %s", vm.vm_id)
+                except Exception as exc:
+                    logger.warning("Failed to pre-warm kernel for %s: %s", vm.vm_id, exc)
 
             vm.transition_to(VMState.IDLE)
             boot_secs = asyncio.get_event_loop().time() - vm.created_at
@@ -386,7 +384,6 @@ class PoolManager:
                 timeout=10,
             )
             if resp.get("status") == "ok" and resp.get("running"):
-                vm.kernel_key = resp["key"]
                 vm.kernel_ports = resp["ports"]
         except Exception as exc:
             logger.warning("Failed to get kernel info for %s: %s", vm.vm_id, exc)
@@ -476,8 +473,13 @@ class PoolManager:
                 )
                 if resp.get("status") == "ok":
                     logger.info("Pre-warmed kernel in ephemeral VM %s", vm.vm_id)
-            except Exception:
-                pass
+                else:
+                    logger.warning(
+                        "pre_warm_kernel returned non-ok for ephemeral %s: %s",
+                        vm.vm_id, resp.get("message", resp.get("status")),
+                    )
+            except Exception as exc:
+                logger.warning("pre_warm_kernel failed for ephemeral %s: %s", vm.vm_id, exc)
 
             return vm
         except Exception:
@@ -508,7 +510,13 @@ class PoolManager:
             logger.warning("Failed to create golden snapshot: %s", exc)
 
     async def _destroy_vm(self, vm: VMInstance) -> None:
-        """Tear down a VM: kill jailer, delete TAP, remove jail dir."""
+        for kid, vid in list(self._kernel_to_vm.items()):
+            if vid == vm.vm_id:
+                try:
+                    await self._caddy.remove_route(kid)
+                except Exception:
+                    pass
+
         if vm.jailer_process and vm.jailer_process.returncode is None:
             vm.jailer_process.terminate()
             try:
