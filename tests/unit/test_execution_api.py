@@ -369,25 +369,13 @@ class TestSessionManagerEdgeCases:
 
 class TestSessionManagerDashboardState:
     @patch("execution_api.server.SandboxSession")
-    async def test_create_populates_vm_id(self, MockSession):
+    async def test_create_sets_active_dashboard_none(self, MockSession):
         session = AsyncMock()
         session._kernel_id = "kid-1"
         MockSession.return_value = session
         mgr = SessionManager(gateway_url="http://gw:8888")
-        with patch.object(mgr, "_lookup_vm_id", return_value="vm-abc"):
-            entry = await mgr.create()
-        assert entry.vm_id == "vm-abc"
+        entry = await mgr.create()
         assert entry.active_dashboard is None
-
-    @patch("execution_api.server.SandboxSession")
-    async def test_create_vm_lookup_failure_keeps_session_usable(self, MockSession):
-        session = AsyncMock()
-        session._kernel_id = "kid-1"
-        MockSession.return_value = session
-        mgr = SessionManager(gateway_url="http://gw:8888")
-        with patch.object(mgr, "_lookup_vm_id", side_effect=RuntimeError("down")):
-            entry = await mgr.create()
-        assert entry.vm_id is None
 
 
 from execution_api.server import _result_to_response, create_app
@@ -492,10 +480,8 @@ def mock_sandbox_session():
 
 @pytest.fixture
 async def client(mock_sandbox_session):
-    with patch("execution_api.server.SandboxSession") as MockSession, \
-         patch.object(SessionManager, "_lookup_vm_id", new_callable=AsyncMock) as mock_lookup:
+    with patch("execution_api.server.SandboxSession") as MockSession:
         MockSession.return_value = mock_sandbox_session
-        mock_lookup.return_value = "vm-test-1"
         mgr = SessionManager(
             gateway_url="http://test:8888", default_timeout=30,
             max_sessions=20, session_ttl=600,
@@ -728,7 +714,7 @@ class TestDashboardEndpoints:
         data = resp.json()
         assert data["session_id"] == sid
         assert "/dash/" in data["url"]
-        assert "vm-test-1" in data["url"]
+        assert "test-kernel-id" in data["url"]
         mock.execute.assert_awaited()
 
     async def test_launch_dashboard_session_not_found(self, client):
@@ -736,11 +722,11 @@ class TestDashboardEndpoints:
         resp = await c.post("/sessions/missing/dashboard", json={"code": "x"})
         assert resp.status_code == 404
 
-    async def test_launch_dashboard_no_vm_id(self, client):
-        c, _ = client
+    async def test_launch_dashboard_no_kernel(self, client):
+        c, mock = client
         sid = (await c.post("/sessions")).json()["session_id"]
         mgr = c._transport.app.state.session_manager
-        mgr._sessions[sid].vm_id = None
+        mgr._sessions[sid].session._kernel_id = None
         resp = await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
         assert resp.status_code == 503
 

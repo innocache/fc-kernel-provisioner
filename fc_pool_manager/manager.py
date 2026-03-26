@@ -80,8 +80,14 @@ class PoolManager:
         counts["max"] = self._config.max_vms
         return counts
 
-    def bind_kernel(self, vm_id: str, kernel_id: str) -> None:
+    async def bind_kernel(self, vm_id: str, kernel_id: str) -> None:
         self._kernel_to_vm[kernel_id] = vm_id
+        vm = self._vms.get(vm_id)
+        if vm:
+            try:
+                await self._caddy.add_route(kernel_id, f"{vm.ip}:5006")
+            except Exception as exc:
+                logger.warning("Failed to register Caddy route for kernel %s: %s", kernel_id, exc)
 
     def vm_by_kernel(self, kernel_id: str) -> dict[str, Any] | None:
         vm_id = self._kernel_to_vm.get(kernel_id)
@@ -264,11 +270,6 @@ class PoolManager:
                     )
             except Exception as exc:
                 logger.warning("Failed to pre-warm kernel for %s: %s", vm.vm_id, exc)
-
-            try:
-                await self._caddy.add_route(vm.vm_id, f"{vm.ip}:5006")
-            except Exception as exc:
-                logger.warning("Failed to register Caddy route for %s: %s", vm.vm_id, exc)
 
             vm.transition_to(VMState.IDLE)
             boot_secs = asyncio.get_event_loop().time() - vm.created_at
@@ -515,10 +516,12 @@ class PoolManager:
             logger.warning("Failed to create golden snapshot: %s", exc)
 
     async def _destroy_vm(self, vm: VMInstance) -> None:
-        try:
-            await self._caddy.remove_route(vm.vm_id)
-        except Exception:
-            pass
+        for kid, vid in list(self._kernel_to_vm.items()):
+            if vid == vm.vm_id:
+                try:
+                    await self._caddy.remove_route(kid)
+                except Exception:
+                    pass
 
         if vm.jailer_process and vm.jailer_process.returncode is None:
             vm.jailer_process.terminate()

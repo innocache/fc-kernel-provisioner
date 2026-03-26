@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from execution_api.caddy_client import CaddyClient
+from fc_pool_manager.caddy_client import CaddyClient
 
 
 def _mock_response(status: int, text: str = ""):
@@ -22,7 +22,7 @@ class TestCaddyClient:
         session = AsyncMock()
         session.put = AsyncMock(return_value=put_resp)
         session.__aenter__.return_value = session
-        with patch("execution_api.caddy_client.aiohttp.ClientSession", return_value=session):
+        with patch("fc_pool_manager.caddy_client.aiohttp.ClientSession", return_value=session):
             await client.add_route("sess1", "172.16.0.2:5006")
         session.put.assert_awaited_once()
 
@@ -37,7 +37,7 @@ class TestCaddyClient:
         session.get = AsyncMock(return_value=get_resp)
         session.post = AsyncMock(return_value=post_resp)
         session.__aenter__.return_value = session
-        with patch("execution_api.caddy_client.aiohttp.ClientSession", return_value=session):
+        with patch("fc_pool_manager.caddy_client.aiohttp.ClientSession", return_value=session):
             await client.add_route("sess1", "172.16.0.2:5006")
         session.put.assert_awaited_once()
         session.get.assert_awaited_once()
@@ -50,7 +50,7 @@ class TestCaddyClient:
         session = AsyncMock()
         session.put = AsyncMock(return_value=put_resp)
         session.__aenter__.return_value = session
-        with patch("execution_api.caddy_client.aiohttp.ClientSession", return_value=session):
+        with patch("fc_pool_manager.caddy_client.aiohttp.ClientSession", return_value=session):
             with pytest.raises(RuntimeError, match="Caddy add_route failed"):
                 await client.add_route("sess1", "172.16.0.2:5006")
 
@@ -59,7 +59,7 @@ class TestCaddyClient:
         session = AsyncMock()
         session.delete = AsyncMock(return_value=del_resp)
         session.__aenter__.return_value = session
-        with patch("execution_api.caddy_client.aiohttp.ClientSession", return_value=session):
+        with patch("fc_pool_manager.caddy_client.aiohttp.ClientSession", return_value=session):
             await client.remove_route("sess1")
         session.delete.assert_awaited_once()
 
@@ -68,7 +68,7 @@ class TestCaddyClient:
         session = AsyncMock()
         session.delete = AsyncMock(return_value=del_resp)
         session.__aenter__.return_value = session
-        with patch("execution_api.caddy_client.aiohttp.ClientSession", return_value=session):
+        with patch("fc_pool_manager.caddy_client.aiohttp.ClientSession", return_value=session):
             await client.remove_route("sess1")
 
     async def test_remove_route_server_error_raises(self, client):
@@ -76,7 +76,7 @@ class TestCaddyClient:
         session = AsyncMock()
         session.delete = AsyncMock(return_value=del_resp)
         session.__aenter__.return_value = session
-        with patch("execution_api.caddy_client.aiohttp.ClientSession", return_value=session):
+        with patch("fc_pool_manager.caddy_client.aiohttp.ClientSession", return_value=session):
             with pytest.raises(RuntimeError, match="Caddy remove_route failed"):
                 await client.remove_route("sess1")
 

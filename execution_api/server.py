@@ -10,7 +10,6 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-import aiohttp
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
@@ -57,7 +56,6 @@ class SessionEntry:
     created_at: float
     last_active: float
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    vm_id: str | None = None
     active_dashboard: str | None = None
 
 
@@ -121,12 +119,6 @@ class SessionManager:
                     pass
                 raise
 
-            vm_id = None
-            try:
-                vm_id = await self._lookup_vm_id(session)
-            except Exception:
-                logger.debug("VM ID lookup failed", exc_info=True)
-
             session_id = uuid.uuid4().hex
             now = time.time()
             entry = SessionEntry(
@@ -134,24 +126,10 @@ class SessionManager:
                 session_id=session_id,
                 created_at=now,
                 last_active=now,
-                vm_id=vm_id,
                 active_dashboard=None,
             )
             self._sessions[session_id] = entry
             return entry
-
-    @staticmethod
-    async def _lookup_vm_id(session: SandboxSession) -> str | None:
-        kernel_id = getattr(session, "_kernel_id", None)
-        if not kernel_id:
-            return None
-        pool_socket = os.environ.get("POOL_SOCKET", "/var/run/fc-pool.sock")
-        conn = aiohttp.UnixConnector(path=pool_socket)
-        async with aiohttp.ClientSession(connector=conn) as http:
-            resp = await http.get(f"http://localhost/api/vms/by-kernel/{kernel_id}")
-            if resp.status == 200:
-                return (await resp.json()).get("vm_id")
-        return None
 
     def get(self, session_id: str) -> SessionEntry | None:
         return self._sessions.get(session_id)
@@ -370,8 +348,9 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
         entry = session_manager.get(session_id)
         if entry is None:
             raise HTTPException(status_code=404, detail="session not found")
-        if entry.vm_id is None:
-            raise HTTPException(status_code=503, detail="VM info not available")
+        kernel_id = getattr(entry.session, "_kernel_id", None)
+        if kernel_id is None:
+            raise HTTPException(status_code=503, detail="kernel not available")
 
         async with entry.lock:
             app_id = uuid.uuid4().hex[:12]
@@ -391,7 +370,7 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
 
             entry.active_dashboard = app_id
             return DashboardResponse(
-                url=f"/dash/{entry.vm_id}/app",
+                url=f"/dash/{kernel_id}/app",
                 session_id=session_id,
                 app_id=app_id,
             )
