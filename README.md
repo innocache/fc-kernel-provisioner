@@ -1,246 +1,247 @@
-# fc-kernel-provisioner
+# Pyrobox
 
-A Jupyter kernel provisioner that runs Python code inside [Firecracker](https://firecracker-microvm.github.io/) microVM sandboxes. Built for LLM-powered chatbots that need secure, isolated code execution with stdout/stderr capture.
+Secure Python code execution in [Firecracker](https://firecracker-microvm.github.io/) microVMs for LLM agents.
 
-## How It Works
+Give your AI agent a sandboxed Python environment where it can execute code, upload files, run data analysis, and create interactive dashboards — all inside hardware-isolated microVMs that boot in 190ms.
+
+- **37ms** session create (pre-warmed kernel pool with snapshot restore)
+- **48ms** code execution (trivial), **107ms** one-shot end-to-end
+- **Hardware isolation**: every session runs in its own Firecracker VM with jailer, seccomp, cgroups, and ebtables
+
+## Using It With LLM Agents
+
+### Tool Definitions
+
+Register these tools with your LLM. The agent decides when to execute code, create dashboards, or download files.
+
+```python
+tools = [
+    {
+        "name": "execute_python_code",
+        "description": (
+            "Execute Python code in an isolated sandbox. "
+            "Pre-installed: numpy, pandas, matplotlib, scipy, plotly, seaborn. "
+            "State persists across calls. Uploaded files are at /data/<filename>."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "Python code to execute"},
+            },
+            "required": ["code"],
+        },
+    },
+    {
+        "name": "launch_dashboard",
+        "description": (
+            "Launch an interactive Panel dashboard in the sandbox and return a URL. "
+            "The dashboard can access the same data and variables as execute_python_code."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "Panel dashboard Python code"},
+            },
+            "required": ["code"],
+        },
+    },
+    {
+        "name": "download_file",
+        "description": (
+            "Read a file from the sandbox and send it to the user for download. "
+            "First use execute_python_code to create the file (e.g., df.to_csv), "
+            "then call this with the file path."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute path in /data/ (e.g., /data/report.csv)",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+]
+```
+
+### The Workflow
 
 ```
-Kernel Gateway ──→ FirecrackerProvisioner ──→ Pool Manager ──→ Jailed Firecracker VM
-                   (Jupyter plugin)           (asyncio daemon)   (ipykernel via vsock)
+User: "Analyze sales.csv"       Agent (LLM)                Execution API
+  + attaches file                    |                           |
+                                     |  POST /sessions           |
+                                     |-------------------------->| Create session
+                                     |                           |
+                                     |  POST /sessions/{id}/files|
+                                     |  (multipart: sales.csv)   |
+                                     |-------------------------->| Upload to VM /data/
+                                     |                           |
+                                     |  Tool: execute_python_code|
+                                     |  "pd.read_csv('/data/sales.csv')..."
+                                     |-------------------------->| Execute in VM
+                                     |  {stdout, images, ...}    |
+                                     |<--------------------------|
+                                     |                           |
+                                     |  Tool: launch_dashboard   |
+                                     |  "import panel as pn..."  |
+                                     |-------------------------->| Deploy Panel app
+                                     |  {url: "/dash/{id}/app"}  |
+                                     |<--------------------------|
 ```
 
-1. **Pool Manager** maintains a warm pool of jailed Firecracker microVMs for ~37ms session creation, with snapshot restore for ~190ms VM boot
-2. **WarmPoolProvisioner** (a Jupyter `KernelProvisionerBase` plugin) acquires pre-warmed kernels so sessions skip the ~780ms in-VM ipykernel startup path
-3. The **Kernel Gateway** talks to the kernel as if it were a local process — standard Jupyter protocol, no modifications
+### Complete Example
 
-Each VM is fully isolated: separate cgroups, user/pid/mount namespaces, seccomp filter (via jailer), and ebtables rules blocking VM-to-VM traffic.
+```python
+import anthropic
+import httpx
+
+API_URL = "http://localhost:8000"
+client = httpx.Client(base_url=API_URL, timeout=120)
+llm = anthropic.Anthropic()
+
+# Create a session
+sid = client.post("/sessions").json()["session_id"]
+
+# Upload a file
+with open("sales.csv", "rb") as f:
+    client.post(f"/sessions/{sid}/files", files={"file": ("sales.csv", f)})
+
+# Let the LLM analyze it
+messages = [{"role": "user", "content": "Analyze the sales data and show trends"}]
+
+response = llm.messages.create(
+    model="claude-sonnet-4-20250514",
+    max_tokens=4096,
+    tools=tools,
+    messages=messages,
+)
+
+# Handle tool calls
+for block in response.content:
+    if block.type == "tool_use":
+        if block.name == "execute_python_code":
+            result = client.post(
+                f"/sessions/{sid}/execute",
+                json={"code": block.input["code"]},
+            ).json()
+            print(result["stdout"])
+
+        elif block.name == "launch_dashboard":
+            result = client.post(
+                f"/sessions/{sid}/dashboard",
+                json={"code": block.input["code"]},
+            ).json()
+            print(f"Dashboard: http://localhost:8080{result['url']}")
+
+# Clean up
+client.delete(f"/sessions/{sid}")
+```
+
+### Execution API Endpoints
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/sessions` | POST | Create a sandbox session |
+| `/sessions` | GET | List active sessions |
+| `/sessions/{id}/execute` | POST | Execute code (JSON: `{"code": "..."}`) |
+| `/sessions/{id}/files` | POST | Upload file (multipart) |
+| `/sessions/{id}/files` | GET | List files in /data/ |
+| `/sessions/{id}/files/{name}` | DELETE | Delete a file |
+| `/sessions/{id}/dashboard` | POST | Launch Panel dashboard |
+| `/sessions/{id}/dashboard` | DELETE | Stop dashboard |
+| `/sessions/{id}` | DELETE | Destroy session and VM |
+| `/execute` | POST | One-shot: create, execute, destroy |
+
+## Data Analyst Agent
+
+A reference implementation using [Chainlit](https://chainlit.io/). Supports file upload/download, inline matplotlib charts, embedded Panel dashboards, context window management, and session recovery.
+
+```bash
+# Anthropic
+export ANTHROPIC_API_KEY=sk-ant-...
+uv run --group apps chainlit run apps/data_analyst/app.py --port 8501
+
+# OpenAI
+LLM_PROVIDER=openai LLM_MODEL=gpt-4o OPENAI_API_KEY=sk-... \
+  uv run --group apps chainlit run apps/data_analyst/app.py
+
+# Local (Ollama)
+LLM_PROVIDER=ollama LLM_MODEL=llama3.1 \
+  uv run --group apps chainlit run apps/data_analyst/app.py
+```
 
 ## Architecture
 
 ```
-fc-kernel-provisioner/
-├── fc_provisioner/          # Jupyter kernel provisioner plugin
-│   ├── provisioner.py       # FirecrackerProvisioner + FirecrackerProcess
-│   ├── warm_pool.py         # WarmPoolProvisioner (warm kernel pool)
-│   ├── pool_client.py       # Async HTTP client for pool manager
-│   └── vsock_client.py      # Length-prefixed JSON over AF_VSOCK
-│
-├── fc_pool_manager/         # Pool manager daemon
-│   ├── manager.py           # VM lifecycle, pool maintenance, health checks
-│   ├── vm.py                # VMInstance, VMState, CIDAllocator
-│   ├── network.py           # TAP creation, IP allocation, MAC generation
-│   ├── config.py            # YAML config loader
-│   ├── snapshot.py          # Golden snapshot management
-│   ├── metrics.py           # Prometheus metric definitions
-│   ├── firecracker_api.py   # Firecracker REST client
-│   └── server.py            # aiohttp Unix socket API
-│
-├── guest/                   # Guest VM contents
-│   ├── fc_guest_agent.py    # Vsock agent (port 52, manages ipykernel + Panel dashboards)
-│   ├── init.sh              # PID 1 init script
-│   └── build_rootfs.sh      # Builds Alpine rootfs with Python + data science libs
-│
-├── config/
-│   ├── fc-pool-manager.service    # systemd unit (pool manager)
-│   ├── fc-kernel-gateway.service  # systemd unit (Kernel Gateway)
-│   ├── fc-pool.yaml               # Pool manager configuration
-│   ├── kernelspec/
-│   │   └── kernel.json            # Jupyter kernelspec
-│   └── setup_network.sh           # Host bridge + NAT setup (with teardown mode)
-│
-├── scripts/
-│   ├── setup-host.sh        # Host setup (with teardown + status modes)
-│   ├── run-tests.sh         # Test runner (unit/smoke/integration)
-│   ├── remote-test.sh       # Remote integration test runner
-│   ├── benchmark_api.py     # API performance profiler
-│   ├── benchmark_snapshot.py # Snapshot restore benchmark
-│   └── deploy.sh            # Production deployment manager
-│
-├── sandbox_client/         # Python client library for chatbot backends
-│   ├── session.py          # SandboxSession — execute code, get structured results
-│   ├── output.py           # OutputParser, ExecutionResult, DisplayOutput
-│   └── artifact_store.py   # ArtifactStore protocol, LocalArtifactStore
-│
-├── execution_api/          # REST API server for chatbot integration
-│   ├── server.py           # FastAPI app, SessionManager, endpoints
-│   ├── models.py           # Pydantic request/response models
-│   ├── caddy_client.py     # Dynamic Caddy route management for dashboards
-│   └── tool_schemas/       # Claude and OpenAI tool definitions
-│
-├── examples/               # Runnable chatbot integration examples
-│   ├── oneshot_example.py  # Single-turn Claude + SandboxSession
-│   └── conversation_example.py  # Multi-turn with persistent session
-│
-├── config/
-│   ├── Caddyfile                # Caddy reverse proxy config (dashboard routing)
-│   └── ...
-│
-└── tests/                   # 515 unit + 30 integration tests
++------------------------------------------------------------+
+|  LLM Agent / Chatbot / curl                                |
++----------------------------+-------------------------------+
+                             | HTTP (REST)
++----------------------------v-------------------------------+
+|  Execution API (FastAPI, port 8000)                        |
+|  Sessions, file upload, code execution, dashboard launch   |
++----------------------------+-------------------------------+
+                             | WebSocket (Jupyter protocol)
++----------------------------v-------------------------------+
+|  Kernel Gateway + WarmPoolProvisioner (port 8888)          |
+|  Pre-warmed kernel pool, ZMQ protocol translation          |
++----------------------------+-------------------------------+
+                             | HTTP (pool API) + vsock
++----------------------------v-------------------------------+
+|  Pool Manager (Unix socket)                                |
+|  VM lifecycle, snapshots, networking, Caddy routes, metrics|
++----------------------------+-------------------------------+
+                             | Firecracker API + TAP networking
++----------------------------v-------------------------------+
+|  Firecracker microVMs (one per session)                    |
+|  jailer (namespaces, seccomp, cgroups) + ebtables isolation|
+|  ipykernel + Panel dispatcher + guest agent                |
++------------------------------------------------------------+
 ```
 
-## Requirements
+**Execution API** receives HTTP requests from agents. Manages session lifecycle, file uploads (chunked base64 via kernel execute), dashboard deployment, and TTL-based cleanup.
 
-- Python 3.11+
-- [uv](https://docs.astral.sh/uv/) package manager
-- Linux with KVM (`/dev/kvm`) for running VMs
+**Kernel Gateway** translates WebSocket to ZMQ (Jupyter wire protocol). The WarmPoolProvisioner plugin pre-acquires VMs from the pool manager so sessions start in 37ms instead of 4.7s.
+
+**Pool Manager** maintains a warm pool of Firecracker VMs. Boots VMs from golden snapshots (190ms restore vs 4.7s cold boot), manages TAP networking and IP allocation, registers Caddy routes for dashboard proxying, and exposes Prometheus metrics.
+
+**Firecracker microVMs** provide hardware-level isolation. Each VM runs in a jailer with separate user/pid/mount namespaces, seccomp filter, cgroup limits, and ebtables rules blocking VM-to-VM traffic. The guest agent manages the ipykernel process and a Panel dispatcher that auto-reloads dashboard apps.
+
+## Deployment
+
+### Requirements
+
+- Python 3.11+ with [uv](https://docs.astral.sh/uv/)
+- Linux with KVM (`/dev/kvm`)
 - Firecracker v1.6.0
 
 Unit tests run anywhere (macOS, Linux, CI) — no KVM needed.
 
-## Quick Start
+### Deploy to a KVM Host
 
 ```bash
-# Install project
-git clone https://github.com/innocache/fc-kernel-provisioner.git
-cd fc-kernel-provisioner
-uv sync --group dev
+# Full deployment (rootfs build, service install, network setup, Caddy)
+./scripts/deploy.sh user@host deploy
 
-# Run unit tests (works anywhere)
-uv run pytest tests/ -v -m "not integration"
+# Update code and restart services
+./scripts/deploy.sh user@host update
+
+# Tear everything down
+./scripts/deploy.sh user@host teardown --force
 ```
 
-### Full Setup (Linux with KVM)
-
-```bash
-# 1. Setup host (Firecracker, kernel, system deps)
-sudo ./scripts/setup-host.sh
-
-# 2. Build guest rootfs (~5 min)
-sudo ./guest/build_rootfs.sh
-
-# 3. Setup network bridge
-sudo ./config/setup_network.sh
-
-# 4. Start pool manager
-sudo uv run python -m fc_pool_manager.server \
-    --config config/fc-pool.yaml \
-    --socket /var/run/fc-pool.sock -v
-
-# 5. Install kernelspec + start Kernel Gateway
-uv run jupyter kernelspec install config/kernelspec/ --name python3-firecracker --user
-uv run jupyter kernelgateway \
-    --KernelGatewayApp.default_kernel_name=python3-firecracker \
-    --KernelGatewayApp.port=8888
-
-# 6. Run integration test
-uv run pytest tests/test_integration.py -v -m integration
-```
-
-## Sandbox Client
-
-A Python client library for chatbot backends to execute code and get structured results:
-
-```python
-from sandbox_client import SandboxSession
-
-async with SandboxSession("http://localhost:8888") as session:
-    result = await session.execute("print('hello')")
-    print(result.stdout)      # "hello\n"
-    print(result.success)     # True
-
-    # Rich output (images, HTML)
-    result = await session.execute("import matplotlib.pyplot as plt; plt.plot([1,2,3]); plt.show()")
-    print(result.outputs[0].mime_type)  # "image/png"
-    print(type(result.outputs[0].data)) # <class 'bytes'>
-
-    # Error handling
-    result = await session.execute("1/0")
-    print(result.error.name)  # "ZeroDivisionError"
-```
-
-Optional artifact storage for URL-based output delivery:
-
-```python
-from sandbox_client import SandboxSession, LocalArtifactStore
-
-store = LocalArtifactStore(base_dir="/var/lib/artifacts", url_prefix="http://localhost:8080/artifacts")
-async with SandboxSession("http://localhost:8888", artifact_store=store) as session:
-    result = await session.execute("...")
-    print(result.outputs[0].url)  # "http://localhost:8080/artifacts/{session_id}/output_0.png"
-```
-
-## Execution API
-
-A REST API server for chatbot integration. Wraps `SandboxSession` with server-managed sessions:
-
-```bash
-# Start the API server (requires Kernel Gateway running)
-uv run python -m execution_api.server
-```
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `POST /sessions` | POST | Create a sandbox session |
-| `GET /sessions` | GET | List active sessions |
-| `POST /sessions/{id}/execute` | POST | Execute code in session |
-| `POST /sessions/{id}/dashboard` | POST | Launch Panel dashboard in session |
-| `DELETE /sessions/{id}/dashboard` | DELETE | Stop dashboard |
-| `DELETE /sessions/{id}` | DELETE | Destroy session |
-| `POST /execute` | POST | One-shot: create + execute + destroy |
-
-```python
-import httpx
-
-# One-shot execution
-resp = httpx.post("http://localhost:8000/execute", json={"code": "print('hello')"})
-print(resp.json()["stdout"])  # "hello\n"
-
-# Session-based (state persists)
-session = httpx.post("http://localhost:8000/sessions").json()
-sid = session["session_id"]
-httpx.post(f"http://localhost:8000/sessions/{sid}/execute", json={"code": "x = 42"})
-resp = httpx.post(f"http://localhost:8000/sessions/{sid}/execute", json={"code": "print(x)"})
-print(resp.json()["stdout"])  # "42\n"
-```
-
-Tool schemas for Claude and OpenAI (`execute_python_code` + `launch_dashboard`) are in `execution_api/tool_schemas/`. See `examples/` for complete chatbot integration scripts. Dashboards run inside the Firecracker VM (Panel-in-VM) and are served to browsers through Caddy reverse proxy at `/dash/{session_id}/`.
-
-## Data Analyst Agent
-
-Interactive data analysis chatbot powered by LLMs + sandboxed Python execution.
-
-```bash
-# Prerequisites: Execution API + Kernel Gateway + Pool Manager running
-export ANTHROPIC_API_KEY=sk-ant-...
-cd apps/data_analyst
-uv run --group apps chainlit run app.py --port 8501
-```
-
-Supports any LLM with tool calling:
-```bash
-# OpenAI
-LLM_PROVIDER=openai LLM_MODEL=gpt-4o OPENAI_API_KEY=sk-... uv run --group apps chainlit run app.py
-
-# Local (Ollama)
-LLM_PROVIDER=ollama LLM_MODEL=llama3.1 uv run --group apps chainlit run app.py
-```
-
-Features: file upload/download, inline matplotlib charts, embedded Panel dashboards, context window management, session recovery.
-
-## Pool Manager API
-
-The pool manager exposes a Unix socket HTTP API at `/var/run/fc-pool.sock`:
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/vms/acquire` | POST | Acquire an idle VM (`{vcpu, mem_mib}` → `{id, ip, vsock_path}`) |
-| `/api/vms/{id}` | DELETE | Release a VM (`{destroy: bool}`) |
-| `/api/vms/{id}/health` | GET | Health check via vsock ping |
-| `/api/vms/{id}/bind-kernel` | POST | Bind kernel_id to VM for dashboard routing |
-| `/api/vms/by-kernel/{kernel_id}` | GET | Lookup VM by kernel_id |
-| `/api/pool/status` | GET | Pool stats (`{idle, assigned, booting, max}`) |
-| `/api/metrics` | GET | Prometheus metrics |
-
-## Configuration
+### Configuration
 
 Pool manager config (`config/fc-pool.yaml`):
 
 ```yaml
 pool:
-  size: 5              # pre-warmed idle VMs
-  max_vms: 30          # hard ceiling
+  size: 5                    # pre-warmed idle VMs
+  max_vms: 30                # hard ceiling
   health_check_interval: 30
-  vm_idle_timeout: 600     # auto-cull idle assigned VMs
+  vm_idle_timeout: 900       # auto-cull idle VMs (seconds)
 
 vm_defaults:
   vcpu: 1
@@ -263,48 +264,31 @@ jailer:
 
 ## Testing
 
-See [docs/testing.md](docs/testing.md) for the full testing plan.
+| Tier | Count | Needs KVM? | What it tests |
+|---|---|---|---|
+| Unit | 562 | No | Models, parsers, provisioners, API endpoints |
+| Service | 7 | No | Full API against fake Kernel Gateway |
+| Infrastructure | 38 | Yes | Real Firecracker VMs on remote host |
+| E2E | 13 | Yes | Agent + LLM integration |
 
 ```bash
-# Unit tests (515 tests, no KVM required)
-uv run pytest tests/ -v -m "not integration"
+# Run locally (no KVM needed)
+uv run pytest tests/unit tests/service -q
 
-# Smoke test (requires running services)
-./scripts/run-tests.sh smoke
-
-# Integration tests (full pipeline)
-./scripts/run-tests.sh integration
+# Run on remote KVM host
+ssh user@host "cd pyrobox && uv run pytest tests/infrastructure/ -v"
 ```
 
-### Remote Testing & Deployment
+## Performance
 
-```bash
-# Run full test suite on a remote KVM host
-./scripts/remote-test.sh user@host
-
-# Starts pool manager, Kernel Gateway, Execution API, and Caddy automatically
-
-# Deploy as systemd services
-./scripts/deploy.sh user@host deploy
-```
-
-See [docs/testing.md](docs/testing.md) for full details.
-
-## Host Cleanup
-
-All setup scripts support teardown:
-
-```bash
-sudo ./scripts/setup-host.sh teardown    # Remove Firecracker, kernel, jailer user
-sudo ./config/setup_network.sh teardown   # Remove bridge, NAT rules
-sudo ./guest/build_rootfs.sh --clean      # Remove built rootfs image
-```
-
-## Status
-
-All **8 spec components are complete**: sandboxed Python execution in Firecracker microVMs, structured result capture (stdout, stderr, errors, images, HTML) via `sandbox_client`, REST API (`execution_api`) with server-managed sessions, Prometheus metrics, VM auto-cull, interactive Panel dashboards served via Caddy, and Claude/OpenAI tool schemas. All GitHub issues are closed.
-
-Session create is 37ms (25× optimized from 1,133ms). See [docs/performance-enhancements.md](docs/performance-enhancements.md) for details.
+| Metric | Value |
+|---|---|
+| Session create (warm pool) | 37ms |
+| One-shot execution | 107ms |
+| Code execution (trivial) | 48ms |
+| Dashboard deploy | 52ms |
+| VM boot (snapshot restore) | 190ms |
+| VM boot (cold) | 4,700ms |
 
 ## License
 
