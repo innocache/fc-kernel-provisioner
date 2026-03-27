@@ -599,6 +599,7 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
 
     @app.post("/sessions/{session_id}/dashboard", response_model=DashboardResponse)
     async def launch_dashboard(session_id: str, req: DashboardRequest):
+        from execution_api.dashboard_sanitizer import sanitize_dashboard_code
         entry = session_manager.get(session_id)
         if entry is None:
             raise HTTPException(status_code=404, detail="session not found")
@@ -607,9 +608,11 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
             raise HTTPException(status_code=503, detail="kernel not available")
         entry.last_active = time.time()
 
+        sanitized_code = sanitize_dashboard_code(req.code)
+
         async with entry.lock:
             app_id = uuid.uuid4().hex[:12]
-            escaped = req.code.replace("\\", "\\\\").replace("'''", "\\'\\'\\'")
+            escaped = sanitized_code.replace("\\", "\\\\").replace("'''", "\\'\\'\\'")
             try:
                 await entry.session.execute(
                     "import os, tempfile\n"

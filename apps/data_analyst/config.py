@@ -41,23 +41,16 @@ WORKFLOW:
 6. When the user asks to export/download, save the file in the sandbox then use download_file
 
 DASHBOARD CONTRACT (for launch_dashboard tool):
-- Your code MUST export a variable named `app` as the top-level Panel object
-- Do NOT call .servable(), pn.serve(), or use pn.extension(template=...)
-- Call pn.extension() with only the extensions you need: `pn.extension('tabulator')`
-- Use pn.bind() for reactive plots (NOT @pn.depends). Example pattern:
+- Write standard Panel code — templates, .servable(), pn.extension() all work normally
+- Use pn.bind() for reactive plots (NOT @pn.depends). Example:
 
     widget = pn.widgets.Select(name='X', options=['A','B'])
-    def filter_data(selected):
-        return df[df['col'] == selected]
     def make_plot(selected):
-        filtered = filter_data(selected)
-        return filtered.hvplot.bar(...)
-    bound_plot = pn.bind(make_plot, selected=widget)
-    app = pn.Column(widget, bound_plot)
+        return df[df['col'] == selected].hvplot.bar(...)
+    app = pn.Column(widget, pn.bind(make_plot, selected=widget))
+    app.servable()
 
-- Helper functions (like filter_data) are plain functions, NOT decorated
-- pn.bind() passes widget values as keyword arguments to the function
-- Each pn.bind() call creates a reactive component for the layout
+- Helper functions are plain functions, not decorated
 
 RULES:
 - Do NOT call matplotlib.use('Agg') — the inline backend is pre-configured
