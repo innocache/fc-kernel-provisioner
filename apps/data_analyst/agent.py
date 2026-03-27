@@ -1,19 +1,21 @@
 import base64
 import logging
 import mimetypes
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import AsyncGenerator
 
 import httpx
 
 from .config import (
-    CADDY_BASE_URL, DOWNLOAD_MAX_BYTES, RECENT_KEEP_FULL, SYSTEM_PROMPT,
-    TOOLS, TRUNCATED_OUTPUT_CHARS, UPLOAD_MAX_BYTES,
+    CADDY_BASE_URL, DOWNLOAD_MAX_BYTES, RECENT_KEEP_FULL, RECOVERY_CACHE_MAX,
+    SYSTEM_PROMPT, TOOLS, TRUNCATED_OUTPUT_CHARS, UPLOAD_MAX_BYTES,
     sanitize_filename,
 )
 from .llm_provider import LLMProvider
 
 logger = logging.getLogger(__name__)
+
+_WARMUP_CODE = "import numpy, pandas\nimport matplotlib; matplotlib.use('Agg')"
 
 
 @dataclass
@@ -56,6 +58,13 @@ class FileDownload:
 AgentEvent = TextDelta | ToolStart | ToolResult | ImageOutput | DashboardLink | FileDownload
 
 
+@dataclass
+class _UploadRecord:
+    filename: str
+    size: int
+    data: bytes | None  # None if too large to cache
+
+
 class DataAnalystAgent:
     def __init__(self, api_url: str, provider: LLMProvider):
         self.api_url = api_url
@@ -63,24 +72,24 @@ class DataAnalystAgent:
         self.session_id: str | None = None
         self.messages: list[dict] = []
         self._client: httpx.AsyncClient | None = None
+        self._uploaded_files: list[_UploadRecord] = []
+        self._upload_cache_used: int = 0
+        self._session_context: str | None = None
 
-    async def start_session(self) -> str:
+    # ── Session lifecycle ────────────────────────────────────────────
+
+    async def _ensure_session(self) -> None:
+        if self.session_id is not None:
+            return
         self._client = httpx.AsyncClient(base_url=self.api_url, timeout=120.0)
         resp = await self._client.post("/sessions")
         resp.raise_for_status()
         self.session_id = resp.json()["session_id"]
-        await self._execute("import numpy, pandas\nimport matplotlib; matplotlib.use('Agg')")
+        await self._execute(_WARMUP_CODE)
+
+    async def start_session(self) -> str:
+        await self._ensure_session()
         assert self.session_id is not None
-        return self.session_id
-
-    def _require_client(self) -> httpx.AsyncClient:
-        if self._client is None:
-            raise RuntimeError("Session not started")
-        return self._client
-
-    def _require_session_id(self) -> str:
-        if self.session_id is None:
-            raise RuntimeError("Session not started")
         return self.session_id
 
     async def end_session(self) -> None:
@@ -94,11 +103,14 @@ class DataAnalystAgent:
             self._client = None
         self.session_id = None
 
+    # ── File operations ──────────────────────────────────────────────
+
     async def upload_file(self, filename: str, content: bytes) -> str:
         if len(content) > UPLOAD_MAX_BYTES:
             raise ValueError(
                 f"File too large ({len(content)} bytes). Max {UPLOAD_MAX_BYTES // (1024 * 1024)}MB."
             )
+        await self._ensure_session()
         safe_name = sanitize_filename(filename)
         client = self._require_client()
         session_id = self._require_session_id()
@@ -108,7 +120,17 @@ class DataAnalystAgent:
         )
         resp.raise_for_status()
         data = resp.json()
+        self._cache_upload(safe_name, content)
         return f"Saved {data['path']} ({data['size']} bytes)"
+
+    def _cache_upload(self, filename: str, content: bytes) -> None:
+        cached_data: bytes | None = None
+        if self._upload_cache_used + len(content) <= RECOVERY_CACHE_MAX:
+            cached_data = content
+            self._upload_cache_used += len(content)
+        self._uploaded_files.append(_UploadRecord(
+            filename=filename, size=len(content), data=cached_data,
+        ))
 
     async def download_file(self, path: str) -> FileDownload:
         if not path.startswith("/data/"):
@@ -132,12 +154,16 @@ class DataAnalystAgent:
         mime, _ = mimetypes.guess_type(filename)
         return FileDownload(filename=filename, data=data, mime_type=mime or "application/octet-stream")
 
+    # ── Chat loop ────────────────────────────────────────────────────
+
     async def chat(self, user_message: str) -> AsyncGenerator[AgentEvent, None]:
+        await self._ensure_session()
         self.messages.append({"role": "user", "content": user_message})
         self.messages = self._compact_messages(self.messages)
 
+        system = self._build_system_prompt()
         response = await self.provider.chat(
-            messages=self.messages, system=SYSTEM_PROMPT, tools=TOOLS,
+            messages=self.messages, system=system, tools=TOOLS,
         )
 
         while response.stop_reason == "tool_use":
@@ -174,12 +200,35 @@ class DataAnalystAgent:
             self.messages.append({"role": "user", "content": tool_results})
             self.messages = self._compact_messages(self.messages)
             response = await self.provider.chat(
-                messages=self.messages, system=SYSTEM_PROMPT, tools=TOOLS,
+                messages=self.messages, system=system, tools=TOOLS,
             )
 
         self.messages.append({"role": "assistant", "content": response.raw_content})
         if response.text:
             yield TextDelta(text=response.text)
+
+    # ── Dynamic system prompt ────────────────────────────────────────
+
+    def _build_system_prompt(self) -> str:
+        parts = [SYSTEM_PROMPT]
+        if self._uploaded_files:
+            file_list = "\n".join(f"  - /data/{r.filename}" for r in self._uploaded_files)
+            parts.append(f"\nUPLOADED FILES:\n{file_list}")
+        if self._session_context:
+            parts.append(f"\nSESSION STATE:\n{self._session_context}")
+        return "\n".join(parts)
+
+    # ── Execution helpers ────────────────────────────────────────────
+
+    def _require_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            raise RuntimeError("Session not started")
+        return self._client
+
+    def _require_session_id(self) -> str:
+        if self.session_id is None:
+            raise RuntimeError("Session not started")
+        return self.session_id
 
     async def _execute(self, code: str) -> dict:
         client = self._require_client()
@@ -187,6 +236,8 @@ class DataAnalystAgent:
         resp = await client.post(
             f"/sessions/{session_id}/execute", json={"code": code},
         )
+        if resp.status_code == 404:
+            raise httpx.ConnectError("session expired")
         return resp.json()
 
     async def _execute_with_recovery(self, code: str) -> dict:
@@ -194,9 +245,7 @@ class DataAnalystAgent:
             return await self._execute(code)
         except (httpx.ConnectError, httpx.ReadError):
             logger.warning("Session lost, recreating...")
-            if self._client:
-                await self._client.aclose()
-            await self.start_session()
+            await self._recover_session()
             return {
                 "success": False, "stdout": "", "stderr": "",
                 "error": {"name": "SessionRestarted",
@@ -204,6 +253,40 @@ class DataAnalystAgent:
                           "traceback": []},
                 "outputs": [], "execution_count": 0,
             }
+
+    async def _recover_session(self) -> None:
+        if self._client:
+            await self._client.aclose()
+        self._client = None
+        self.session_id = None
+
+        await self._ensure_session()
+
+        re_uploaded = []
+        too_large = []
+        for rec in self._uploaded_files:
+            if rec.data is not None:
+                try:
+                    client = self._require_client()
+                    session_id = self._require_session_id()
+                    await client.post(
+                        f"/sessions/{session_id}/files",
+                        files={"file": (rec.filename, rec.data)},
+                    )
+                    re_uploaded.append(rec.filename)
+                except Exception:
+                    logger.warning("Failed to re-upload %s during recovery", rec.filename)
+            else:
+                too_large.append(rec.filename)
+
+        context_parts = []
+        if re_uploaded:
+            context_parts.append(f"Files re-uploaded: {', '.join(re_uploaded)}")
+        if too_large:
+            context_parts.append(f"Files too large to cache (user must re-upload): {', '.join(too_large)}")
+        context_parts.append("All variables and computation state from previous session are lost.")
+        context_parts.append("Reload data from /data/ paths as needed.")
+        self._session_context = "\n".join(context_parts)
 
     async def _launch_dashboard(self, code: str) -> dict:
         client = self._require_client()
@@ -219,6 +302,8 @@ class DataAnalystAgent:
                     "link": DashboardLink(url=url, full_url=full_url)}
         return {"text": f"Dashboard failed: {resp.text}"}
 
+    # ── Result formatting ────────────────────────────────────────────
+
     @staticmethod
     def _format_result(data: dict) -> str:
         parts = []
@@ -229,6 +314,8 @@ class DataAnalystAgent:
         if data.get("error"):
             err = data["error"]
             parts.append(f"[error]: {err['name']}: {err['value']}")
+            if err.get("traceback"):
+                parts.append("".join(err["traceback"]))
         for i, out in enumerate(data.get("outputs", [])):
             mime = out.get("mime_type", "")
             if out.get("data_b64"):
@@ -248,6 +335,8 @@ class DataAnalystAgent:
                 ))
         return images
 
+    # ── Context compaction ───────────────────────────────────────────
+
     @staticmethod
     def _compact_messages(messages: list[dict]) -> list[dict]:
         tool_indices = [
@@ -256,20 +345,34 @@ class DataAnalystAgent:
         ]
         if len(tool_indices) <= RECENT_KEEP_FULL:
             return messages
-        old_indices = set(tool_indices[:-RECENT_KEEP_FULL])
+
+        recent_cutoff = tool_indices[-RECENT_KEEP_FULL]
+        very_old_cutoff = tool_indices[0] if len(tool_indices) > RECENT_KEEP_FULL * 2 else -1
+
         compacted = []
         for i, m in enumerate(messages):
-            if i in old_indices:
-                content = []
-                for block in m["content"]:
-                    if isinstance(block, dict) and block.get("type") == "tool_result":
-                        text = block.get("content", "")
-                        if len(text) > TRUNCATED_OUTPUT_CHARS:
-                            text = text[:TRUNCATED_OUTPUT_CHARS] + "... [truncated]"
-                        content.append({**block, "content": text})
-                    else:
-                        content.append(block)
-                compacted.append({**m, "content": content})
-            else:
+            if i >= recent_cutoff or m["role"] != "user" or not isinstance(m.get("content"), list):
                 compacted.append(m)
+                continue
+
+            content = []
+            for block in m["content"]:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    content.append(block)
+                    continue
+
+                text = block.get("content", "")
+
+                has_error = "[error]:" in text
+                if has_error:
+                    pass  # never truncate errors
+                elif i <= very_old_cutoff:
+                    text = "[truncated tool output]"
+                elif len(text) > TRUNCATED_OUTPUT_CHARS:
+                    head = text[:200]
+                    tail = text[-100:]
+                    text = f"{head}\n... [truncated] ...\n{tail}"
+
+                content.append({**block, "content": text})
+            compacted.append({**m, "content": content})
         return compacted

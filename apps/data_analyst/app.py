@@ -12,7 +12,6 @@ from .llm_provider import create_provider
 async def on_start():
     provider = create_provider(LLM_PROVIDER, LLM_MODEL)
     agent = DataAnalystAgent(api_url=EXECUTION_API_URL, provider=provider)
-    await agent.start_session()
     cl.user_session.set("agent", agent)
     await cl.Message(content="Ready! Upload a data file or ask a question.").send()
 

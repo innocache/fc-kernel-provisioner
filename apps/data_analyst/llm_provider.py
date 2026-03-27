@@ -15,7 +15,7 @@ class LLMResponse:
     text: str | None
     tool_calls: list[ToolCall]
     stop_reason: str
-    raw_content: list = field(default_factory=list)
+    raw_content: list[dict] = field(default_factory=list)
 
 
 @runtime_checkable
@@ -33,6 +33,21 @@ class AnthropicProvider:
         self.client = anthropic.AsyncAnthropic()
         self.model = model
 
+    @staticmethod
+    def _normalize_content(content) -> list[dict]:
+        blocks = []
+        for block in content:
+            if block.type == "text":
+                blocks.append({"type": "text", "text": block.text})
+            elif block.type == "tool_use":
+                blocks.append({
+                    "type": "tool_use",
+                    "id": block.id,
+                    "name": block.name,
+                    "input": block.input,
+                })
+        return blocks
+
     async def chat(self, messages, system, tools) -> LLMResponse:
         response = await self.client.messages.create(
             model=self.model, max_tokens=4096,
@@ -49,7 +64,7 @@ class AnthropicProvider:
         return LLMResponse(
             text="\n".join(text_parts) if text_parts else None,
             tool_calls=tool_calls, stop_reason=stop,
-            raw_content=response.content,
+            raw_content=self._normalize_content(response.content),
         )
 
     def format_tool_result(self, tool_call_id: str, content: str) -> dict:
@@ -63,10 +78,23 @@ class OpenAIProvider:
         self.model = model
 
     def _convert_tools(self, tools: list[dict]) -> list[dict]:
-        return [{"type": "function", "function": {
-            "name": t["name"], "description": t.get("description", ""),
-            "parameters": t["input_schema"],
-        }} for t in tools]
+        from execution_api.tool_schemas.tools import to_openai
+        return to_openai(tools)
+
+    @staticmethod
+    def _normalize_content(message) -> list[dict]:
+        blocks = []
+        if message.content:
+            blocks.append({"type": "text", "text": message.content})
+        if message.tool_calls:
+            for tc in message.tool_calls:
+                blocks.append({
+                    "type": "tool_use",
+                    "id": tc.id,
+                    "name": tc.function.name,
+                    "input": json.loads(tc.function.arguments),
+                })
+        return blocks
 
     def _convert_messages(self, messages: list[dict], system: str) -> list[dict]:
         oai = [{"role": "system", "content": system}]
@@ -75,14 +103,13 @@ class OpenAIProvider:
                 text = ""
                 tool_calls_out = []
                 for block in m["content"]:
-                    if hasattr(block, "type"):
-                        if block.type == "text":
-                            text += block.text
-                        elif block.type == "tool_use":
-                            tool_calls_out.append({
-                                "id": block.id, "type": "function",
-                                "function": {"name": block.name, "arguments": json.dumps(block.input)},
-                            })
+                    if block.get("type") == "text":
+                        text += block.get("text", "")
+                    elif block.get("type") == "tool_use":
+                        tool_calls_out.append({
+                            "id": block["id"], "type": "function",
+                            "function": {"name": block["name"], "arguments": json.dumps(block["input"])},
+                        })
                 msg = {"role": "assistant", "content": text or None}
                 if tool_calls_out:
                     msg["tool_calls"] = tool_calls_out
@@ -116,7 +143,7 @@ class OpenAIProvider:
         stop = "tool_use" if choice.finish_reason in ("tool_calls", "function_call") else "end"
         return LLMResponse(
             text=choice.message.content, tool_calls=tool_calls,
-            stop_reason=stop, raw_content=[choice.message],
+            stop_reason=stop, raw_content=self._normalize_content(choice.message),
         )
 
     def format_tool_result(self, tool_call_id: str, content: str) -> dict:

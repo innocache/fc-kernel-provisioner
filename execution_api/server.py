@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import logging
+import mimetypes
 import os
 import re
 import time
@@ -17,7 +18,7 @@ from datetime import datetime, timezone
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from ._sandbox import ExecutionResult, LocalArtifactStore, SandboxSession
@@ -427,6 +428,60 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
         except json.JSONDecodeError:
             raise HTTPException(status_code=500, detail="invalid file list output")
         return FileListResponse(files=files)
+
+    @app.get("/sessions/{session_id}/files/{filename}")
+    async def download_file(session_id: str, filename: str):
+        entry = session_manager.get(session_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="session not found")
+        safe_filename = _validate_safe_filename(filename)
+
+        async with entry.lock:
+            entry.last_active = time.time()
+            result = await entry.session.execute(
+                "import os, json\n"
+                f"path = '/data/{safe_filename}'\n"
+                "if not os.path.isfile(path):\n"
+                "    print(json.dumps({'error': 'not_found'}))\n"
+                "else:\n"
+                "    size = os.path.getsize(path)\n"
+                "    print(json.dumps({'size': size}))\n"
+            )
+        if not result.success:
+            error_msg = result.error.value if result.error else "unknown"
+            raise HTTPException(status_code=500, detail=f"file read failed: {error_msg}")
+        try:
+            output = json.loads(result.stdout.strip() or "{}")
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=500, detail="invalid file check output")
+        if output.get("error") == "not_found":
+            raise HTTPException(status_code=404, detail="file not found")
+        file_size = output.get("size", 0)
+        if file_size > UPLOAD_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="file too large")
+
+        async with entry.lock:
+            chunks = []
+            chunk_size = UPLOAD_CHUNK_SIZE
+            for offset in range(0, file_size, chunk_size):
+                read_result = await entry.session.execute(
+                    "import base64\n"
+                    f"with open('/data/{safe_filename}', 'rb') as _f:\n"
+                    f"    _f.seek({offset})\n"
+                    f"    print(base64.b64encode(_f.read({chunk_size})).decode())\n"
+                )
+                if not read_result.success:
+                    error_msg = read_result.error.value if read_result.error else "unknown"
+                    raise HTTPException(status_code=500, detail=f"file read failed: {error_msg}")
+                chunks.append(base64.b64decode(read_result.stdout.strip()))
+
+        file_bytes = b"".join(chunks)
+        content_type, _ = mimetypes.guess_type(safe_filename)
+        return Response(
+            content=file_bytes,
+            media_type=content_type or "application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{safe_filename}"'},
+        )
 
     @app.delete("/sessions/{session_id}/files/{filename}", response_model=DeleteResponse)
     async def delete_file(session_id: str, filename: str):

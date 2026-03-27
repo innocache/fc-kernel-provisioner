@@ -321,7 +321,7 @@ class TestContextCompaction:
             ]})
         result = agent._compact_messages(messages)
         old_result = result[2]["content"][0]["content"]
-        assert old_result.endswith("... [truncated]")
+        assert "[truncated]" in old_result
         assert len(old_result) < 500
 
         recent_result = result[-1]["content"][0]["content"]
@@ -351,11 +351,12 @@ class TestOpenAIMessageConversion:
     @patch("apps.data_analyst.llm_provider.openai", create=True)
     def test_assistant_tool_use_converted(self, _):
         provider = OpenAIProvider.__new__(OpenAIProvider)
-        tool_block = MagicMock()
-        tool_block.type = "tool_use"
-        tool_block.id = "t1"
-        tool_block.name = "execute_python_code"
-        tool_block.input = {"code": "print(1)"}
+        tool_block = {
+            "type": "tool_use",
+            "id": "t1",
+            "name": "execute_python_code",
+            "input": {"code": "print(1)"},
+        }
         messages = [{"role": "assistant", "content": [tool_block]}]
         oai = provider._convert_messages(messages, "sys")
         assert oai[1]["role"] == "assistant"

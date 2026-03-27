@@ -3,7 +3,7 @@
     "type": "function",
     "function": {
       "name": "execute_python_code",
-      "description": "Execute Python code in an isolated Firecracker microVM sandbox. Use this when the user asks you to run code, analyze data, create visualizations, or perform calculations. The sandbox has numpy, pandas, matplotlib, scipy, plotly, and seaborn pre-installed. State persists across calls within the same conversation.",
+      "description": "Execute Python code in an isolated sandbox. Pre-installed: numpy, pandas, matplotlib, scipy, plotly, seaborn. State persists across calls. Uploaded files are at /data/<filename>.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -12,7 +12,9 @@
             "description": "Python code to execute"
           }
         },
-        "required": ["code"]
+        "required": [
+          "code"
+        ]
       }
     }
   },
@@ -20,21 +22,37 @@
     "type": "function",
     "function": {
       "name": "launch_dashboard",
-      "description": "Launch an interactive Panel dashboard inside the sandbox VM and return a browser URL. Use after execute_python_code has computed data — the dashboard reads the same files that the kernel wrote. The dashboard persists until the session ends or a new dashboard replaces it.",
+      "description": "Launch an interactive Panel dashboard in the sandbox and return a URL. The dashboard can access the same data and variables as execute_python_code. Use for interactive exploration with widgets, filters, and live charts.",
       "parameters": {
         "type": "object",
         "properties": {
           "code": {
             "type": "string",
-            "description": "Panel dashboard Python code executed inside the VM."
-          },
-          "framework": {
-            "type": "string",
-            "enum": ["panel"],
-            "description": "Visualization framework. Only panel is supported."
+            "description": "Panel dashboard Python code"
           }
         },
-        "required": ["code"]
+        "required": [
+          "code"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "download_file",
+      "description": "Read a file from the sandbox and send it to the user for download. First use execute_python_code to create the file (e.g., df.to_csv, plt.savefig), then call this tool with the file path to deliver it to the user.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Absolute path in /data/ (e.g., /data/report.csv)"
+          }
+        },
+        "required": [
+          "path"
+        ]
       }
     }
   }

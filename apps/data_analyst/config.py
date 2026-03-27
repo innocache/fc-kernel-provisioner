@@ -1,6 +1,8 @@
 import os
 import re
 
+from execution_api.tool_schemas.tools import TOOLS  # noqa: F401 — re-exported
+
 EXECUTION_API_URL = os.environ.get("EXECUTION_API_URL", "http://localhost:8000")
 CADDY_BASE_URL = os.environ.get("CADDY_BASE_URL", "http://localhost:8080")
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "anthropic")
@@ -8,6 +10,8 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "claude-sonnet-4-20250514")
 
 UPLOAD_MAX_BYTES = 50 * 1024 * 1024
 DOWNLOAD_MAX_BYTES = 10 * 1024 * 1024
+
+RECOVERY_CACHE_MAX = 20 * 1024 * 1024
 
 MAX_HISTORY_TOKENS = 80_000
 RECENT_KEEP_FULL = 10
@@ -43,54 +47,3 @@ RULES:
 - Handle errors gracefully — if code fails, explain and retry
 - Be concise in explanations, let the data speak
 - When saving files for download, use /data/ as the output directory"""
-
-TOOLS = [
-    {
-        "name": "execute_python_code",
-        "description": (
-            "Execute Python code in an isolated sandbox. "
-            "Pre-installed: numpy, pandas, matplotlib, scipy, plotly, seaborn. "
-            "State persists across calls. Uploaded files are at /data/<filename>."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "code": {"type": "string", "description": "Python code to execute"},
-            },
-            "required": ["code"],
-        },
-    },
-    {
-        "name": "launch_dashboard",
-        "description": (
-            "Launch an interactive Panel dashboard in the sandbox and return a URL. "
-            "The dashboard can access the same data and variables as execute_python_code. "
-            "Use for interactive exploration with widgets, filters, and live charts."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "code": {"type": "string", "description": "Panel dashboard Python code"},
-            },
-            "required": ["code"],
-        },
-    },
-    {
-        "name": "download_file",
-        "description": (
-            "Read a file from the sandbox and send it to the user for download. "
-            "First use execute_python_code to create the file (e.g., df.to_csv, plt.savefig), "
-            "then call this tool with the file path to deliver it to the user."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Absolute path in /data/ (e.g., /data/report.csv)",
-                },
-            },
-            "required": ["path"],
-        },
-    },
-]
