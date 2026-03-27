@@ -51,6 +51,7 @@ DASHBOARD CONTRACT (for launch_dashboard tool):
     app.servable()
 
 - Helper functions are plain functions, not decorated
+- Dashboard code is pre-flight tested before deployment — errors are returned for self-correction
 
 RULES:
 - Do NOT call matplotlib.use('Agg') — the inline backend is pre-configured

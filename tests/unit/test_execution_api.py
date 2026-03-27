@@ -723,11 +723,19 @@ class TestEndpoints:
 
 
 class TestDashboardEndpoints:
+    @staticmethod
+    def _dash_execute_side_effect():
+        preflight = ExecutionResult(
+            success=True, stdout="PREFLIGHT_OK\n", stderr="", error=None, outputs=[], execution_count=1,
+        )
+        deploy = ExecutionResult(
+            success=True, stdout="dashboard deployed\n", stderr="", error=None, outputs=[], execution_count=2,
+        )
+        return [preflight, deploy]
+
     async def test_launch_dashboard_success(self, client):
         c, mock = client
-        mock.execute = AsyncMock(return_value=ExecutionResult(
-            success=True, stdout="dashboard deployed\n", stderr="", error=None, outputs=[], execution_count=1,
-        ))
+        mock.execute = AsyncMock(side_effect=self._dash_execute_side_effect())
         sid = (await c.post("/sessions")).json()["session_id"]
         resp = await c.post(f"/sessions/{sid}/dashboard", json={"code": "app = 1"})
         assert resp.status_code == 200
@@ -735,7 +743,7 @@ class TestDashboardEndpoints:
         assert data["session_id"] == sid
         assert "/dash/" in data["url"]
         assert "test-kernel-id" in data["url"]
-        mock.execute.assert_awaited()
+        assert mock.execute.await_count == 2
 
     async def test_launch_dashboard_session_not_found(self, client):
         c, _ = client
@@ -759,9 +767,7 @@ class TestDashboardEndpoints:
 
     async def test_launch_dashboard_replaces_existing(self, client):
         c, mock = client
-        mock.execute = AsyncMock(return_value=ExecutionResult(
-            success=True, stdout="ok\n", stderr="", error=None, outputs=[], execution_count=1,
-        ))
+        mock.execute = AsyncMock(side_effect=self._dash_execute_side_effect() + self._dash_execute_side_effect())
         sid = (await c.post("/sessions")).json()["session_id"]
         r1 = await c.post(f"/sessions/{sid}/dashboard", json={"code": "v1"})
         r2 = await c.post(f"/sessions/{sid}/dashboard", json={"code": "v2"})
@@ -771,9 +777,7 @@ class TestDashboardEndpoints:
 
     async def test_stop_dashboard_success(self, client):
         c, mock = client
-        mock.execute = AsyncMock(return_value=ExecutionResult(
-            success=True, stdout="ok\n", stderr="", error=None, outputs=[], execution_count=1,
-        ))
+        mock.execute = AsyncMock(side_effect=self._dash_execute_side_effect())
         sid = (await c.post("/sessions")).json()["session_id"]
         await c.post(f"/sessions/{sid}/dashboard", json={"code": "x"})
         resp = await c.delete(f"/sessions/{sid}/dashboard")

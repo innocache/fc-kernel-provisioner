@@ -315,6 +315,9 @@ class DataAnalystAgent:
             full_url = f"{CADDY_BASE_URL}{url}"
             return {"text": f"Dashboard at {full_url}",
                     "link": DashboardLink(url=url, full_url=full_url)}
+        if resp is not None and resp.status_code == 422:
+            detail = resp.json().get("detail", resp.text)
+            return {"text": f"Dashboard code error — fix and retry:\n{detail}"}
         if resp is not None and resp.status_code in (404, 503):
             logger.warning("Dashboard failed (%s), recovering session...", resp.status_code)
             await self._recover_session()

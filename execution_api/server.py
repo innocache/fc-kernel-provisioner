@@ -613,10 +613,36 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
         async with entry.lock:
             app_id = uuid.uuid4().hex[:12]
             escaped = sanitized_code.replace("\\", "\\\\").replace("'''", "\\'\\'\\'")
+
+            try:
+                preflight = await entry.session.execute(
+                    "import os, tempfile, traceback\n"
+                    "os.makedirs('/apps', exist_ok=True)\n"
+                    f"code = '''{escaped}'''\n"
+                    "tmp = tempfile.mktemp(dir='/apps', suffix='_preflight.py')\n"
+                    "with open(tmp, 'w') as f: f.write(code)\n"
+                    "try:\n"
+                    "    exec(compile(open(tmp).read(), tmp, 'exec'))\n"
+                    "    print('PREFLIGHT_OK')\n"
+                    "except Exception:\n"
+                    "    print('PREFLIGHT_FAIL')\n"
+                    "    traceback.print_exc()\n"
+                    "finally:\n"
+                    "    os.remove(tmp)\n"
+                )
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail=f"dashboard preflight failed: {exc}")
+            stdout = preflight.stdout if preflight.success else ""
+            if "PREFLIGHT_OK" not in stdout:
+                error_detail = stdout.replace("PREFLIGHT_FAIL\n", "").strip()
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"dashboard code failed pre-flight check:\n{error_detail}",
+                )
+
             try:
                 await entry.session.execute(
                     "import os, tempfile\n"
-                    "os.makedirs('/apps', exist_ok=True)\n"
                     f"code = '''{escaped}'''\n"
                     "tmp = tempfile.mktemp(dir='/apps', suffix='.py')\n"
                     "with open(tmp, 'w') as f: f.write(code)\n"
