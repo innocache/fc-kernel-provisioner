@@ -376,9 +376,13 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
         entry = session_manager.get(session_id)
         if entry is None:
             raise HTTPException(status_code=404, detail="session not found")
-        async with entry.lock:
-            entry.last_active = time.time()
-            result = await entry.session.execute(req.code)
+        try:
+            async with entry.lock:
+                entry.last_active = time.time()
+                result = await entry.session.execute(req.code)
+        except Exception as exc:
+            logger.error("Execute failed for session %s: %s", session_id, exc)
+            raise HTTPException(status_code=503, detail=f"sandbox unavailable: {exc}")
         return _result_to_response(result)
 
     @app.post("/sessions/{session_id}/files", response_model=FileUploadResponse)

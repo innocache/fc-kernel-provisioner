@@ -52,19 +52,19 @@ async def on_message(message: cl.Message):
                 current_step = None
 
         elif isinstance(event, ImageOutput):
-            img = cl.Image(content=event.data, name="plot.png", display="inline")
-            response_msg.elements = response_msg.elements or []
-            response_msg.elements.append(img)
+            await cl.Message(
+                content="",
+                elements=[cl.Image(content=event.data, name="plot.png", display="inline")],
+            ).send()
 
         elif isinstance(event, DashboardLink):
-            iframe = (
-                f'<iframe src="{event.full_url}" '
-                f'width="100%" height="600" frameborder="0" '
-                f'style="border-radius: 8px; border: 1px solid #e0e0e0;"></iframe>'
-            )
             await cl.Message(
-                content=f"📊 Interactive dashboard ([open full screen]({event.full_url}))",
-                elements=[cl.Text(name="dashboard", content=iframe, display="inline")],
+                content=(
+                    f'<p><a href="{event.full_url}" target="_blank">Open dashboard in new tab</a></p>\n'
+                    f'<iframe src="{event.full_url}" '
+                    f'width="100%" height="600" frameborder="0" '
+                    f'style="border-radius: 8px; border: 1px solid #e0e0e0;"></iframe>'
+                ),
             ).send()
 
         elif isinstance(event, FileDownload):

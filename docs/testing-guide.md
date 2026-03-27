@@ -3,17 +3,20 @@
 ## Quick Reference
 
 ```bash
-# Unit tests only (no services needed, ~4s)
-uv run pytest tests/ -m "not integration and not slow"
+# Unit + service tests only (no services needed, ~3s)
+uv run pytest tests/unit tests/service -q
 
-# All tests except real-LLM (needs services running)
-uv run pytest tests/ -m "not slow"
+# E2e mock-LLM (needs Execution API + remote KG)
+uv run pytest tests/e2e/test_agent_mock_llm.py -v
 
-# Everything including real-LLM (needs services + API key)
-ANTHROPIC_API_KEY=sk-ant-... uv run pytest tests/
+# E2e real-LLM (needs above + API key)
+ANTHROPIC_API_KEY=sk-ant-... uv run pytest tests/e2e/test_agent_real_llm.py -v
 
-# Remote full suite (starts all services automatically)
-./scripts/remote-test.sh user@host
+# Infrastructure tests (runs on Linux host only)
+uv run pytest tests/infrastructure -v
+
+# Everything
+ANTHROPIC_API_KEY=sk-ant-... uv run pytest tests/ -v
 ```
 
 ## Test Pyramid
@@ -24,195 +27,233 @@ ANTHROPIC_API_KEY=sk-ant-... uv run pytest tests/
                     │  (human)  │  docs/test-plan-data-analyst.md
                   ┌─┴───────────┴─┐
                   │  Real LLM     │  5 tests (@slow)
-                  │  (API key)    │  tests/test_data_analyst_llm.py
+                  │  (API key)    │  tests/e2e/test_agent_real_llm.py
                 ┌─┴───────────────┴─┐
-                │  Integration      │  38 tests (@integration)
-                │  (services)       │  tests/test_integration.py
-                │                   │  tests/test_data_analyst_integration.py
+                │  E2e Mock LLM     │  8 tests
+                │  (Execution API)  │  tests/e2e/test_agent_mock_llm.py
               ┌─┴───────────────────┴─┐
-              │  Unit                  │  526 tests
-              │  (no deps)             │  36 test files
-              └────────────────────────┘
+              │  Infrastructure       │  38 tests
+              │  (all services)       │  tests/infrastructure/
+            ┌─┴───────────────────────┴─┐
+            │  Service                    │  25 tests
+            │  (fake KG)                  │  tests/service/
+          ┌─┴─────────────────────────────┴─┐
+          │  Unit                              │  537 tests
+          │  (no deps)                         │  tests/unit/
+          └────────────────────────────────────┘
 ```
 
 | Layer | Tests | Run Time | Dependencies | When to Run |
 |-------|-------|----------|-------------|-------------|
-| Unit | 526 | ~4s | None | Every commit |
-| Integration | 38 | ~5min | Pool Manager + KG + Execution API + Caddy | PR merge |
-| Real LLM | 5 | ~2min | Above + `ANTHROPIC_API_KEY` | Manual / weekly |
-| Manual | 43 | ~1hr | Above + browser | Pre-release |
+| Unit | 537 | ~3s | None | Every commit |
+| Service | 25 | ~0.3s | None (fake KG) | Every commit |
+| Infrastructure | 38 | ~5min | All services on Linux host | After deploy |
+| E2e Mock LLM | 8 | ~30s | Execution API (local) + KG (remote) | After agent changes |
+| E2e Real LLM | 5 | ~90s | Above + `ANTHROPIC_API_KEY` | Manual / weekly |
+| Manual | 43 | ~1hr | Above + Chainlit + browser | Pre-release |
 
-## Unit Tests (526)
+## Architecture: Split-Host Testing
+
+Infrastructure services run on a Linux host (KVM required for Firecracker).
+Execution API, agent, and tests run on your dev machine (macOS or Linux).
+
+```
+Dev machine (macOS)                        Linux host (192.168.1.53)
+┌────────────────────────────────┐         ┌───────────────────────────┐
+│  pytest / Chainlit             │         │  Pool Manager (unix sock) │
+│      ↓                         │         │  Kernel Gateway (:8888)   │
+│  Execution API (:8000)         │         │  Caddy (:8080)            │
+│      ↓ GATEWAY_URL             │ network │  Firecracker VMs          │
+│      └─────────────────────────+────────>│                           │
+└────────────────────────────────┘         └───────────────────────────┘
+```
+
+### Prerequisites on Linux Host
+
+Services managed via systemd. Deploy with `scripts/deploy.sh`:
+
+```bash
+./scripts/deploy.sh xuwang@192.168.1.53
+```
+
+Verify services are running:
+
+```bash
+ssh xuwang@192.168.1.53 "sudo systemctl status fc-pool-manager fc-kernel-gateway fc-caddy --no-pager"
+```
+
+KG must be bound to `0.0.0.0:8888` (set via `--KernelGatewayApp.ip=0.0.0.0` in the service file).
+
+### Starting the Execution API Locally
+
+```bash
+GATEWAY_URL=http://192.168.1.53:8888 \
+CADDY_BASE_URL=http://192.168.1.53:8080 \
+  uv run python -m execution_api.server
+```
+
+Verify: `curl http://localhost:8000/sessions` should return `[]`.
+
+## Unit Tests (537)
 
 No services needed. Run anywhere.
 
 ```bash
-uv run pytest tests/ -m "not integration and not slow"
+uv run pytest tests/unit -q
 ```
 
-### Coverage by Module
+## Service Tests (25)
 
-| Module | Test File | Tests | What's Covered |
-|--------|-----------|-------|---------------|
-| Pool Manager | `test_pool_manager.py` | 5 | Acquire/release lifecycle |
-| Pool Manager edges | `test_pool_manager_edge_cases.py` | 26 | Exhaustion, concurrent acquire, shutdown |
-| VM state | `test_vm.py`, `test_vm_edge_cases.py` | 43 | State transitions, CID allocation, timestamps |
-| Network | `test_network.py`, `test_network_edge_cases.py` | 22 | TAP create/delete, IP allocation, bridge |
-| Network hardening | `test_network_hardening.py` | 15 | tc rate limit, iptables whitelist, conntrack |
-| Config | `test_config.py`, `test_config_edge_cases.py` | 16 | YAML parsing, defaults, edge cases |
-| Firecracker API | `test_firecracker_api.py` | 6 | Machine/boot/drive/network/vsock configure |
-| Snapshot | `test_snapshot.py` | 11 | Metadata validation, invalidation, file hashing |
-| Snapshot reconfig | `test_snapshot_reconfig.py` | 9 | TAP detach/attach, network reconfig, fail-closed |
-| Golden snapshot | `test_golden_snapshot.py` | 8 | Create, failure cleanup, ephemeral VM, ensure checks |
-| Auto-cull | `test_auto_cull.py` | 9 | Stale VM cull, preserve active, disabled mode |
-| Metrics | `test_metrics.py` | 12 | Gauges, counters, histograms, acquire/release |
-| Pre-warm | `test_prewarm.py` | 9 | Kernel pre-warm, key/ports stored, ephemeral |
-| Warm pool provisioner | `test_warm_pool_provisioner.py` | 10 | Queue pop, fallback, replenish, cleanup |
-| Pool server | `test_pool_server.py`, `test_server.py`, `test_server_edge_cases.py` | 22 | HTTP handlers, bind/lookup, metrics endpoint |
-| Pool client | `test_pool_client.py` | 2 | Client init, base URL |
-| Provisioner | `test_provisioner.py`, `test_provisioner_edge_cases.py` | 30 | Pre-launch, launch, cleanup, connection info |
-| Vsock | `test_vsock_client.py`, `test_vsock_client_edge_cases.py` | 18 | Protocol, timeout, error handling |
-| Sandbox client | `test_session.py` | 28 | Start/stop, execute, WebSocket, output parsing |
-| Output parser | `test_output_parser.py` | 35 | Stdout, stderr, errors, display outputs, edge cases |
-| Artifact store | `test_artifact_store.py` | 7 | Save, URL generation, directory creation |
-| Execution API | `test_execution_api.py` | 75 | Models, session manager, endpoints, dashboard |
-| Caddy client | `test_caddy_client.py` | 8 | Route add/remove, server key discovery |
-| Guest agent | `test_guest_agent.py`, `test_guest_agent_edge_cases.py` | 54 | Start/stop kernel, dashboard, reconfigure, pre-warm |
-| Data analyst agent | `test_data_analyst.py` | 40 | Providers, session, upload/download, chat loop, compaction |
-
-### 100% Public Method Coverage
-
-Every public method (73/73) across all source packages has at least one unit test. Verified by AST-based coverage scan.
-
-## Integration Tests (38)
-
-Requires running services. Auto-skip when services aren't reachable.
+Uses a fake Kernel Gateway (in-process). No external services needed.
 
 ```bash
-# Start services (automated)
-./scripts/remote-test.sh user@host --keep-services
-
-# Or manually:
-sudo uv run python -m fc_pool_manager.server --config config/fc-pool.yaml --socket /var/run/fc-pool.sock -v &
-sudo uv run jupyter kernelgateway --KernelGatewayApp.default_kernel_name=python3-firecracker --KernelGatewayApp.port=8888 &
-uv run python -m execution_api.server &
-caddy run --config config/Caddyfile &
-
-# Run integration tests
-EXECUTION_API_URL=http://localhost:8000 uv run pytest tests/ -m integration -m "not slow"
+uv run pytest tests/service -q
 ```
 
-### Coverage by Feature
+5 tests skip because the fake KG can't write to `/data/` inside a real VM.
 
-| Test Class | File | Tests | What's Verified |
-|-----------|------|-------|----------------|
-| TestSandboxClient | `test_integration.py` | 12 | SandboxSession end-to-end: hello, state, errors, matplotlib, pandas HTML, timeout, artifacts, lifecycle, recovery, exec_count, stderr |
-| TestExecutionAPI | `test_integration.py` | 5 | REST API: hello, session CRUD, errors, rich output, 404 |
-| TestExecutionAPIExtended | `test_integration.py` | 6 | One-shot errors/images, custom timeout, dashboard stop, large output, concurrent sessions |
-| TestPoolMetrics | `test_integration.py` | 1 | Prometheus /api/metrics endpoint |
-| TestPoolStatus | `test_integration.py` | 2 | Pool status endpoint, session create latency <500ms |
-| TestDashboardIntegration | `test_integration.py` | 4 | Dashboard launch+access, data from kernel, replace, cleanup |
-| TestAgentAnalysisFlow | `test_data_analyst_integration.py` | 4 | Upload+execute, chart generation, multi-turn state, error reporting |
-| TestAgentFileRoundTrip | `test_data_analyst_integration.py` | 2 | Upload→process→download, download nonexistent file |
-| TestAgentSessionLifecycle | `test_data_analyst_integration.py` | 2 | Session create/destroy, pre-warmed imports available |
+## Infrastructure Tests (38)
 
-### Auto-Skip Behavior
-
-Integration tests check TCP reachability at module load time. If services aren't running, all tests in the module are skipped (not failed):
-
-```
-$ uv run pytest tests/ -m "not slow" -q
-526 passed, 38 skipped, 5 deselected
-```
-
-## Real LLM Tests (5)
-
-Uses actual Claude API calls + real sandbox. Costs money per run.
+Run on the Linux host with all services. Auto-skip when services aren't reachable.
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-... uv run pytest tests/test_data_analyst_llm.py -v -m slow
+# On the Linux host directly:
+uv run pytest tests/infrastructure -v
+
+# Or from dev machine (requires services on remote host + Execution API locally):
+EXECUTION_API_URL=http://localhost:8000 uv run pytest tests/infrastructure -v
+```
+
+## E2e Tests — Mock LLM (8)
+
+Uses scripted LLM responses (MockProvider) but hits the real Execution API + sandbox.
+Tests agent-to-sandbox wiring: file upload, code execution, images, downloads, session lifecycle.
+
+```bash
+# Start Execution API first (see above), then:
+uv run pytest tests/e2e/test_agent_mock_llm.py -v
+```
+
+## E2e Tests — Real LLM (5)
+
+Uses actual Anthropic API calls + real sandbox. Costs money per run (~$0.05).
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... uv run pytest tests/e2e/test_agent_real_llm.py -v
 ```
 
 | Test | What It Proves |
 |------|---------------|
-| `test_llm_summarizes_uploaded_data` | Claude reads CSV, reports row count |
+| `test_llm_summarizes_uploaded_data` | Claude reads CSV, reports shape |
 | `test_llm_answers_analytical_question` | Claude runs groupby, names a product |
 | `test_llm_generates_working_chart` | Claude generates matplotlib code that produces images |
 | `test_llm_exports_file` | Claude creates + downloads a CSV file |
 | `test_llm_state_persists_across_turns` | Variables survive across chat turns |
 
-## Manual Tests (43)
+## Manual Testing — Chainlit UI
 
-Full test plan at `docs/test-plan-data-analyst.md`. Requires browser + running services.
+### Setup
 
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-cd apps/data_analyst
-uv run --group apps chainlit run app.py --port 8501
-# Open http://localhost:8501
-```
+Three processes on the dev machine:
 
-### Test Suites
-
-| Suite | Tests | Focus |
-|-------|-------|-------|
-| LLM-in-the-loop (TC-L01 to TC-L12) | 12 | Real LLM analysis flows with uploaded data |
-| UI/UX (TC-U01 to TC-U15) | 15 | Chainlit frontend: drag-drop, images, iframes, streaming |
-| Error/Edge cases (TC-E01 to TC-E10) | 10 | Oversized files, malicious code, infinite loops, path traversal |
-| Multi-LLM (TC-M01 to TC-M06) | 6 | Claude, GPT-4o, Ollama, invalid keys, rate limiting |
-
-## Remote Test Runner
-
-`scripts/remote-test.sh` automates the full integration test flow on a KVM host:
+**Terminal 1 — Execution API:**
 
 ```bash
-# First time: sets up host (Firecracker, rootfs, network, Caddy, XFS)
-./scripts/remote-test.sh user@host
-
-# Subsequent: skip setup, just run tests
-./scripts/remote-test.sh user@host --skip-setup
-
-# Keep services running after tests (for manual testing or benchmarks)
-./scripts/remote-test.sh user@host --skip-setup --keep-services
+GATEWAY_URL=http://192.168.1.53:8888 \
+CADDY_BASE_URL=http://192.168.1.53:8080 \
+  uv run python -m execution_api.server
 ```
 
-The script:
-1. Syncs code to remote host
-2. Ensures XFS mount for reflink support
-3. Installs kernelspec
-4. Starts pool manager, Kernel Gateway, Execution API, Caddy
-5. Polls until all services are ready (120s timeout)
-6. Runs unit tests + integration tests
-7. Teardown: kills all services, cleans up VMs
+**Terminal 2 — Chainlit app:**
+
+```bash
+EXECUTION_API_URL=http://localhost:8000 \
+CADDY_BASE_URL=http://192.168.1.53:8080 \
+ANTHROPIC_API_KEY=sk-ant-... \
+  uv run chainlit run apps/data_analyst/app.py --port 8501
+```
+
+**Browser:** http://localhost:8501
+
+### Test Scenarios
+
+| # | Scenario | Steps | What to verify |
+|---|----------|-------|----------------|
+| 1 | Basic chat | Type "What can you do?" | Text response, no tool calls. Session created lazily. |
+| 2 | Upload + analyze | Drag CSV, ask "Summarize this data" | File uploaded, LLM reads with pandas, prints shape/dtypes/head |
+| 3 | Visualization | "Create a bar chart of revenue by product" | Matplotlib chart inline in chat |
+| 4 | Dashboard | "Create an interactive dashboard to explore the data" | Panel dashboard in iframe, link opens at 192.168.1.53:8080 |
+| 5 | File download | "Export a summary to CSV and send it to me" | Download button in chat, file saves correctly |
+| 6 | Multi-turn | "Set x = 42" then "What is x?" | Variables persist across turns |
+| 7 | Error handling | "Run 1/0" | Error with traceback, LLM explains gracefully |
+| 8 | Large output | "Print a 1000-row DataFrame" | Truncated in chat, no crash |
+
+Full 43-case plan at `docs/test-plan-data-analyst.md`.
+
+### Environment Variables Reference
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GATEWAY_URL` | `http://localhost:8888` | Kernel Gateway WebSocket endpoint |
+| `EXECUTION_API_URL` | `http://localhost:8000` | Execution API HTTP endpoint |
+| `CADDY_BASE_URL` | `http://localhost:8080` | Dashboard proxy base URL |
+| `ANTHROPIC_API_KEY` | (none) | Required for real LLM tests and Chainlit |
+| `LLM_PROVIDER` | `anthropic` | LLM provider: `anthropic`, `openai`, `ollama` |
+| `LLM_MODEL` | `claude-sonnet-4-20250514` | Model name for the selected provider |
+
+## Troubleshooting
+
+### E2e tests skip with "Execution API not reachable"
+
+The Execution API isn't running locally. Start it:
+
+```bash
+GATEWAY_URL=http://192.168.1.53:8888 uv run python -m execution_api.server
+```
+
+### Session creation hangs or times out
+
+KG's warm pool may be filling. Check pool status:
+
+```bash
+ssh xuwang@192.168.1.53 "sudo curl -sf --unix-socket /var/run/fc-pool.sock http://localhost/api/pool/status"
+```
+
+Wait for `idle > 0`, or restart the pool manager.
+
+### "Connection refused" to 192.168.1.53:8888
+
+KG is bound to `127.0.0.1`. Update the service file:
+
+```bash
+# In config/fc-kernel-gateway.service, ExecStart line must include:
+--KernelGatewayApp.ip=0.0.0.0
+```
+
+Then redeploy: `sudo systemctl daemon-reload && sudo systemctl restart fc-kernel-gateway`
+
+### Dashboard iframe shows "refused to connect"
+
+Browser blocks mixed content or the Caddy port isn't reachable.
+Verify: `curl http://192.168.1.53:8080` from your dev machine.
+
+### Infrastructure tests fail with "500 Internal Server Error"
+
+- Check pool status (see above)
+- If pool has 0 idle VMs, wait for replenishment or restart pool manager
+- Check KG log: `journalctl -u fc-kernel-gateway --no-pager -n 50`
+
+### Real LLM tests skip
+
+`ANTHROPIC_API_KEY` not set. Export it before running.
 
 ## Benchmark Scripts
 
 ```bash
 # API performance profiler (all code tiers + concurrent)
-uv run python scripts/benchmark_api.py --url http://localhost:8000 --iterations 5
+GATEWAY_URL=http://192.168.1.53:8888 \
+  uv run python scripts/benchmark_api.py --url http://localhost:8000 --iterations 5
 
-# Snapshot restore vs full boot timing
+# Snapshot restore vs full boot timing (run on Linux host)
 sudo uv run python scripts/benchmark_snapshot.py --config config/fc-pool.yaml
-
-# Generate sample data for manual testing
-uv run python scripts/generate_test_data.py
 ```
-
-## Troubleshooting
-
-### Integration tests fail with "500 Internal Server Error"
-- Check pool status: `sudo curl -sf --unix-socket /var/run/fc-pool.sock http://localhost/api/pool/status`
-- If pool has 0 idle VMs, wait for replenishment or restart pool manager
-- Check KG log: `tail /tmp/fc-kernel-gateway.log`
-
-### Tests hang on remote host
-- Kill zombie pytest processes: `ssh host "pkill -9 -f pytest"`
-- Check for orphan Firecracker processes: `ssh host "pgrep -f firecracker | wc -l"`
-
-### "Invalid Signature" in KG log
-- HMAC key mismatch between provisioner and kernel
-- Restart the Kernel Gateway: `sudo pkill -f kernelgateway; sleep 2; sudo .venv/bin/jupyter-kernelgateway ...`
-
-### Integration tests skip locally
-- Expected behavior — tests auto-skip when services aren't running
-- Run `uv run pytest tests/ -m "not slow"` to see: `526 passed, 38 skipped`

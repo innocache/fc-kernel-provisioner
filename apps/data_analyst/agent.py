@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import logging
 import mimetypes
@@ -15,7 +16,7 @@ from .llm_provider import LLMProvider
 
 logger = logging.getLogger(__name__)
 
-_WARMUP_CODE = "import numpy, pandas\nimport matplotlib; matplotlib.use('Agg')"
+_WARMUP_CODE = "%matplotlib inline\nimport numpy, pandas"
 
 
 @dataclass
@@ -78,14 +79,24 @@ class DataAnalystAgent:
 
     # ── Session lifecycle ────────────────────────────────────────────
 
-    async def _ensure_session(self) -> None:
+    async def _ensure_session(self, retries: int = 3) -> None:
         if self.session_id is not None:
             return
-        self._client = httpx.AsyncClient(base_url=self.api_url, timeout=120.0)
-        resp = await self._client.post("/sessions")
-        resp.raise_for_status()
-        self.session_id = resp.json()["session_id"]
-        await self._execute(_WARMUP_CODE)
+        if self._client is None:
+            self._client = httpx.AsyncClient(base_url=self.api_url, timeout=120.0)
+        last_exc: Exception | None = None
+        for attempt in range(retries):
+            try:
+                resp = await self._client.post("/sessions")
+                resp.raise_for_status()
+                self.session_id = resp.json()["session_id"]
+                await self._execute(_WARMUP_CODE)
+                return
+            except (httpx.HTTPStatusError, httpx.ConnectError) as exc:
+                last_exc = exc
+                logger.warning("Session creation attempt %d/%d failed: %s", attempt + 1, retries, exc)
+                await asyncio.sleep(2 * (attempt + 1))
+        raise last_exc  # type: ignore[misc]
 
     async def start_session(self) -> str:
         await self._ensure_session()
@@ -236,8 +247,9 @@ class DataAnalystAgent:
         resp = await client.post(
             f"/sessions/{session_id}/execute", json={"code": code},
         )
-        if resp.status_code == 404:
-            raise httpx.ConnectError("session expired")
+        if resp.status_code in (404, 503):
+            raise httpx.ConnectError(f"session unavailable ({resp.status_code})")
+        resp.raise_for_status()
         return resp.json()
 
     async def _execute_with_recovery(self, code: str) -> dict:
@@ -291,16 +303,24 @@ class DataAnalystAgent:
     async def _launch_dashboard(self, code: str) -> dict:
         client = self._require_client()
         session_id = self._require_session_id()
-        resp = await client.post(
-            f"/sessions/{session_id}/dashboard", json={"code": code},
-        )
-        if resp.status_code == 200:
+        try:
+            resp = await client.post(
+                f"/sessions/{session_id}/dashboard", json={"code": code},
+            )
+        except (httpx.ConnectError, httpx.ReadError):
+            resp = None
+        if resp is not None and resp.status_code == 200:
             data = resp.json()
             url = data.get("url", "")
             full_url = f"{CADDY_BASE_URL}{url}"
             return {"text": f"Dashboard at {full_url}",
                     "link": DashboardLink(url=url, full_url=full_url)}
-        return {"text": f"Dashboard failed: {resp.text}"}
+        if resp is not None and resp.status_code in (404, 503):
+            logger.warning("Dashboard failed (%s), recovering session...", resp.status_code)
+            await self._recover_session()
+            return {"text": "Dashboard failed: sandbox was restarted. Please try again."}
+        detail = resp.text if resp is not None else "connection lost"
+        return {"text": f"Dashboard failed: {detail}"}
 
     # ── Result formatting ────────────────────────────────────────────
 
