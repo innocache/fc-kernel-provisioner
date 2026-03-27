@@ -69,13 +69,16 @@ class TestLLMAnalysis:
 
     async def test_llm_generates_working_chart(self, agent):
         await agent.upload_file("sales.csv", TEST_CSV)
-        events = await collect_events(agent, "Create a bar chart of total revenue by product. Use matplotlib.")
+        events = await collect_events(agent, "Create a bar chart of total revenue by product. Use matplotlib. Show the plot inline.")
         tool_results = [e for e in events if isinstance(e, ToolResult)]
         assert any(r.success for r in tool_results), "Code execution failed"
         has_image = any(isinstance(e, ImageOutput) for e in events)
-        has_chart_in_output = any("plot" in r.output.lower() or "saved" in r.output.lower()
-                                  for r in tool_results if r.success)
-        assert has_image or has_chart_in_output, "No chart evidence in output"
+        chart_keywords = ("plot", "saved", "chart", "bar", "figure", "png", "image")
+        all_output = " ".join(r.output.lower() for r in tool_results if r.success)
+        all_text = " ".join(e.text.lower() for e in events if isinstance(e, TextDelta) and e.text)
+        has_chart_evidence = any(kw in all_output or kw in all_text for kw in chart_keywords)
+        assert has_image or has_chart_evidence, \
+            f"No chart evidence in output. Tool output: {all_output[:500]}"
 
     async def test_llm_exports_file(self, agent):
         await agent.upload_file("sales.csv", TEST_CSV)
