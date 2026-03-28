@@ -272,6 +272,20 @@ class SessionManager:
         for sid in expired:
             await self.destroy(sid)
 
+    async def health_check_sessions(self) -> None:
+        if not self._pool_client:
+            return
+        for sid in list(self._sessions):
+            entry = self._sessions.get(sid)
+            if entry is None or entry.state != SessionState.ACTIVE:
+                continue
+            if not entry.vm_ip:
+                continue
+            healthy = await self._pool_client.health_check(entry.vm_ip)
+            if not healthy:
+                logger.warning("Session %s (VM %s) failed health check, destroying", sid, entry.vm_id)
+                await self.destroy(sid)
+
     def start_cleanup_task(self) -> None:
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
 
@@ -280,6 +294,7 @@ class SessionManager:
             await asyncio.sleep(60)
             try:
                 await self.cleanup_expired()
+                await self.health_check_sessions()
             except Exception:
                 logger.debug("Cleanup error", exc_info=True)
 

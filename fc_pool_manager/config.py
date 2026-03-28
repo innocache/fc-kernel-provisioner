@@ -34,6 +34,8 @@ class PoolConfig:
     jailer_uid: int
     jailer_gid: int
 
+    use_per_vm_kg: bool = False
+
     @classmethod
     def from_yaml(cls, path: str) -> "PoolConfig":
         with open(path) as f:
@@ -67,4 +69,5 @@ class PoolConfig:
             firecracker_path=jail["exec_path"],
             jailer_uid=jail["uid"],
             jailer_gid=jail["gid"],
+            use_per_vm_kg=pool.get("use_per_vm_kg", False),
         )

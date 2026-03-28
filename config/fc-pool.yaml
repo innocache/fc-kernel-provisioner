@@ -5,6 +5,7 @@ pool:
   health_check_interval: 30
   vm_idle_timeout: 900
   snapshot_dir: /srv/jailer/snapshots
+  use_per_vm_kg: true
 
 vm_defaults:
   vcpu: 1

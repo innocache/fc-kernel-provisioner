@@ -138,30 +138,36 @@ class PoolManager:
                     vm.transition_to(VMState.ASSIGNED)
                     logger.info("Acquired VM %s (ip=%s, cid=%d)", vm.vm_id, vm.ip, vm.cid)
                     asyncio.create_task(self.replenish())  # backfill pool
-                    result: dict[str, Any] = {
-                        "id": vm.vm_id,
-                        "ip": vm.ip,
-                        "vsock_path": vm.vsock_path,
-                    }
-                    if vm.kernel_ports:
-                        result["kernel_ports"] = vm.kernel_ports
+                    result = self._build_acquire_result(vm)
+                    await self._register_vm_route(vm)
                     return result
 
             if self.total_count >= self._config.max_vms:
                 raise RuntimeError("pool_exhausted")
 
-            # No idle VMs but under max — boot one on demand
             logger.info("No idle VMs, booting on demand")
             vm = await self._boot_vm()
             vm.transition_to(VMState.ASSIGNED)
-            result: dict[str, Any] = {
-                "id": vm.vm_id,
-                "ip": vm.ip,
-                "vsock_path": vm.vsock_path,
-            }
-            if vm.kernel_ports:
-                result["kernel_ports"] = vm.kernel_ports
+            result = self._build_acquire_result(vm)
+            await self._register_vm_route(vm)
             return result
+
+    def _build_acquire_result(self, vm) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "id": vm.vm_id,
+            "vm_id": vm.vm_id,
+            "ip": vm.ip,
+            "vsock_path": vm.vsock_path,
+        }
+        if vm.kernel_ports:
+            result["kernel_ports"] = vm.kernel_ports
+        return result
+
+    async def _register_vm_route(self, vm) -> None:
+        try:
+            await self._caddy.add_vm_route(vm.vm_id, vm.ip, port=8888)
+        except Exception:
+            logger.debug("Failed to register Caddy VM route for %s", vm.vm_id, exc_info=True)
 
     async def release(self, vm_id: str, destroy: bool = True) -> None:
         """Release a VM back to the pool or destroy it."""
@@ -249,17 +255,19 @@ class PoolManager:
                 await self._full_boot(vm)
                 await self._wait_for_guest_agent(vm)
                 from .vsock import vsock_request
+                action = "pre_warm_with_kg" if self._config.use_per_vm_kg else "pre_warm_kernel"
                 try:
                     resp = await vsock_request(
                         vm.vsock_path,
-                        {"action": "pre_warm_kernel"},
+                        {"action": action},
                         timeout=120,
                     )
                     if resp.get("status") == "ok":
-                        vm.kernel_ports = resp["ports"]
-                        logger.info("Pre-warmed kernel for %s", vm.vm_id)
+                        if "ports" in resp:
+                            vm.kernel_ports = resp["ports"]
+                        logger.info("Pre-warmed (%s) for %s", action, vm.vm_id)
                 except Exception as exc:
-                    logger.warning("Failed to pre-warm kernel for %s: %s", vm.vm_id, exc)
+                    logger.warning("Failed to pre-warm (%s) for %s: %s", action, vm.vm_id, exc)
 
             vm.transition_to(VMState.IDLE)
             boot_secs = asyncio.get_event_loop().time() - vm.created_at
@@ -465,21 +473,22 @@ class PoolManager:
             await self._wait_for_guest_agent(vm)
 
             from .vsock import vsock_request
+            action = "pre_warm_with_kg" if self._config.use_per_vm_kg else "pre_warm_kernel"
             try:
                 resp = await vsock_request(
                     vm.vsock_path,
-                    {"action": "pre_warm_kernel"},
+                    {"action": action},
                     timeout=120,
                 )
                 if resp.get("status") == "ok":
-                    logger.info("Pre-warmed kernel in ephemeral VM %s", vm.vm_id)
+                    logger.info("Pre-warmed (%s) in ephemeral VM %s", action, vm.vm_id)
                 else:
                     logger.warning(
-                        "pre_warm_kernel returned non-ok for ephemeral %s: %s",
-                        vm.vm_id, resp.get("message", resp.get("status")),
+                        "%s returned non-ok for ephemeral %s: %s",
+                        action, vm.vm_id, resp.get("message", resp.get("status")),
                     )
             except Exception as exc:
-                logger.warning("pre_warm_kernel failed for ephemeral %s: %s", vm.vm_id, exc)
+                logger.warning("%s failed for ephemeral %s: %s", action, vm.vm_id, exc)
 
             return vm
         except Exception:
@@ -516,6 +525,10 @@ class PoolManager:
                     await self._caddy.remove_route(kid)
                 except Exception:
                     pass
+        try:
+            await self._caddy.remove_vm_route(vm.vm_id)
+        except Exception:
+            pass
 
         if vm.jailer_process and vm.jailer_process.returncode is None:
             vm.jailer_process.terminate()

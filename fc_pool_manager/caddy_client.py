@@ -65,6 +65,41 @@ class CaddyClient:
                 body = await resp.text()
                 raise RuntimeError(f"Caddy remove_route failed ({resp.status}): {body}")
 
+    async def add_vm_route(self, vm_id: str, vm_ip: str, port: int = 8888) -> None:
+        route = {
+            "@id": f"vm_{vm_id}",
+            "match": [{"path": [f"/vm/{vm_id}/*"]}],
+            "handle": [
+                {
+                    "handler": "rewrite",
+                    "strip_path_prefix": f"/vm/{vm_id}",
+                },
+                {
+                    "handler": "reverse_proxy",
+                    "upstreams": [{"dial": f"{vm_ip}:{port}"}],
+                    "flush_interval": -1,
+                },
+            ],
+        }
+        put_url = f"{self._admin_url}/id/vm_{vm_id}"
+        async with aiohttp.ClientSession() as http:
+            resp = await http.put(put_url, json=route)
+            if resp.status == 404:
+                server_key = await self._discover_server_key(http)
+                add_url = f"{self._admin_url}/config/apps/http/servers/{server_key}/routes/0"
+                resp = await http.post(add_url, json=route)
+            if resp.status not in (200, 201):
+                body = await resp.text()
+                raise RuntimeError(f"Caddy add_vm_route failed ({resp.status}): {body}")
+
+    async def remove_vm_route(self, vm_id: str) -> None:
+        del_url = f"{self._admin_url}/id/vm_{vm_id}"
+        async with aiohttp.ClientSession() as http:
+            resp = await http.delete(del_url)
+            if resp.status not in (200, 204, 404):
+                body = await resp.text()
+                raise RuntimeError(f"Caddy remove_vm_route failed ({resp.status}): {body}")
+
 
 async def _vsock_request(vsock_uds_path: str, msg: dict[str, Any], timeout: float = 30) -> dict[str, Any]:
     reader, writer = await asyncio.open_unix_connection(vsock_uds_path)
