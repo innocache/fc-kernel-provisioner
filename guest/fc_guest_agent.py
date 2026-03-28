@@ -218,6 +218,8 @@ def pre_warm_with_kg() -> dict:
     kg_log.close()
 
     _wait_for_kg()
+    kernel_id = _discover_kernel_id()
+    _run_warm_up(kernel_id)
 
     if os.path.isfile(_DISPATCHER_PATH):
         os.makedirs("/apps", exist_ok=True)
@@ -228,7 +230,56 @@ def pre_warm_with_kg() -> dict:
         )
         _wait_for_dispatcher()
 
-    return {"kg_port": _KG_PORT}
+    return {"kg_port": _KG_PORT, "kernel_id": kernel_id}
+
+
+def _discover_kernel_id() -> str:
+    import urllib.request
+    resp = urllib.request.urlopen(f"http://127.0.0.1:{_KG_PORT}/api/kernels", timeout=5)
+    kernels = json.loads(resp.read())
+    if not kernels:
+        raise RuntimeError("KG has no prespawned kernel")
+    return kernels[0]["id"]
+
+
+def _run_warm_up(kernel_id: str) -> None:
+    import asyncio
+    import aiohttp
+
+    warmup_code = "import numpy, pandas\n%matplotlib inline\nimport os; os.makedirs('/data', exist_ok=True)"
+
+    async def _do_warm_up():
+        ws_url = f"ws://127.0.0.1:{_KG_PORT}/api/kernels/{kernel_id}/channels"
+        async with aiohttp.ClientSession() as http:
+            async with http.ws_connect(ws_url) as ws:
+                msg_id = "warmup-001"
+                await ws.send_json({
+                    "header": {
+                        "msg_id": msg_id,
+                        "msg_type": "execute_request",
+                        "username": "warmup",
+                        "session": "",
+                        "version": "5.3",
+                    },
+                    "parent_header": {},
+                    "metadata": {},
+                    "content": {
+                        "code": warmup_code,
+                        "silent": False,
+                        "store_history": False,
+                        "allow_stdin": False,
+                        "stop_on_error": True,
+                    },
+                    "buffers": [],
+                    "channel": "shell",
+                })
+                while True:
+                    raw = await asyncio.wait_for(ws.receive_json(), timeout=60)
+                    if (raw.get("parent_header", {}).get("msg_id") == msg_id
+                            and raw.get("msg_type") == "execute_reply"):
+                        break
+
+    asyncio.run(_do_warm_up())
 
 
 def _wait_for_kg(timeout: float = 90.0) -> None:

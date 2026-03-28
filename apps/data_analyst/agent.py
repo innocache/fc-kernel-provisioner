@@ -17,7 +17,14 @@ from .llm_provider import LLMProvider
 
 logger = logging.getLogger(__name__)
 
-_WARMUP_CODE = "import numpy, pandas\n%matplotlib inline\nimport os; os.makedirs('/data', exist_ok=True)"
+_WARMUP_CODE = (
+    "import sys, os\n"
+    "os.makedirs('/data', exist_ok=True)\n"
+    "if 'pandas' not in sys.modules:\n"
+    "    import numpy, pandas\n"
+    "    %matplotlib inline\n"
+    "print('ready')"
+)
 
 
 @dataclass

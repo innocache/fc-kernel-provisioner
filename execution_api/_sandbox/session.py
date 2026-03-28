@@ -39,12 +39,14 @@ class SandboxSession:
         gateway_url: str = "http://localhost:8888",
         kernel_name: str = "python3-firecracker",
         discover_kernel: bool = False,
+        skip_kernel_delete: bool = False,
         default_timeout: float = 30.0,
         artifact_store: ArtifactStore | None = None,
     ):
         self._gateway_url = gateway_url.rstrip("/")
         self._kernel_name = kernel_name
         self._discover_kernel = discover_kernel
+        self._skip_kernel_delete = skip_kernel_delete
         self._default_timeout = default_timeout
         self._artifact_store = artifact_store
 
@@ -100,7 +102,7 @@ class SandboxSession:
             self._ws_ctx = None
             self._ws = None
 
-        if self._http is not None and self._kernel_id is not None and not self._discover_kernel:
+        if self._http is not None and self._kernel_id is not None and not self._discover_kernel and not self._skip_kernel_delete:
             try:
                 await self._http.delete(
                     f"{self._gateway_url}/api/kernels/{self._kernel_id}",

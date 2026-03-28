@@ -1,0 +1,53 @@
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	# Health endpoint for the LB itself
+	handle /lb/health {
+		respond "ok" 200
+	}
+
+	# Session-aware routing
+	# For single host: forward everything to one backend
+	# For multi-host: add backends, Caddy uses cookie affinity
+	handle /sessions/* {
+		reverse_proxy {$BACKENDS} {
+			lb_policy cookie {
+				name _pyrobox_route
+				secret changeme-in-production
+			}
+			health_uri /health
+			health_interval 15s
+			fail_duration 30s
+		}
+	}
+
+	# One-shot execute (no session affinity needed)
+	handle /execute {
+		reverse_proxy {$BACKENDS} {
+			lb_policy least_conn
+			health_uri /health
+			health_interval 15s
+		}
+	}
+
+	# Session creation (no session_id yet — pick by capacity)
+	handle /sessions {
+		reverse_proxy {$BACKENDS} {
+			lb_policy least_conn
+			health_uri /health
+			health_interval 15s
+		}
+	}
+
+	# Everything else (health, artifacts, etc.)
+	handle {
+		reverse_proxy {$BACKENDS} {
+			lb_policy least_conn
+			health_uri /health
+			health_interval 15s
+		}
+	}
+}
