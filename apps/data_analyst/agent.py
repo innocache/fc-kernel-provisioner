@@ -96,11 +96,13 @@ class DataAnalystAgent:
             try:
                 resp = await self._client.post("/sessions")
                 resp.raise_for_status()
-                self.session_id = resp.json()["session_id"]
+                sid = resp.json()["session_id"]
+                self.session_id = sid
                 await self._execute(_WARMUP_CODE)
                 return
             except (httpx.HTTPStatusError, httpx.ConnectError) as exc:
                 last_exc = exc
+                self.session_id = None
                 logger.warning("Session creation attempt %d/%d failed: %s", attempt + 1, retries, exc)
                 await asyncio.sleep(2 * (attempt + 1))
         raise last_exc  # type: ignore[misc]

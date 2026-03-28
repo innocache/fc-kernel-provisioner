@@ -58,13 +58,12 @@ async def on_message(message: cl.Message):
             ).send()
 
         elif isinstance(event, DashboardHTML):
-            import base64 as _b64
-            data_uri = "data:text/html;base64," + _b64.b64encode(event.html).decode()
+            html_escaped = event.html.decode("utf-8", errors="replace").replace("&", "&amp;").replace('"', "&quot;")
             await cl.Message(
                 content=(
-                    f'<iframe src="{data_uri}" '
+                    f'<iframe srcdoc="{html_escaped}" '
                     f'width="100%" height="700" frameborder="0" '
-                    f'sandbox="allow-scripts allow-downloads" '
+                    f'sandbox="allow-scripts allow-same-origin allow-downloads" '
                     f'style="border-radius: 8px; border: 1px solid #e0e0e0;"></iframe>'
                 ),
             ).send()
@@ -80,9 +79,13 @@ async def on_message(message: cl.Message):
             ).send()
 
         elif isinstance(event, FileDownload):
+            import tempfile
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f"_{event.filename}")
+            tmp.write(event.data)
+            tmp.close()
             await cl.Message(
-                content=f"📎 **{event.filename}** ready for download",
-                elements=[cl.File(name=event.filename, content=event.data, display="inline")],
+                content=f"**{event.filename}** ready for download",
+                elements=[cl.File(name=event.filename, path=tmp.name, display="inline")],
             ).send()
 
     await response_msg.update()
