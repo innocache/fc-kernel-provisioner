@@ -37,24 +37,6 @@ TOOLS: list[dict] = [
         },
     },
     {
-        "name": "launch_dashboard",
-        "description": (
-            "Launch an interactive Panel dashboard in the sandbox and return a URL. "
-            "The dashboard can access the same data and variables as execute_python_code. "
-            "Use for interactive exploration with widgets, filters, and live charts."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "code": {
-                    "type": "string",
-                    "description": "Panel dashboard Python code",
-                },
-            },
-            "required": ["code"],
-        },
-    },
-    {
         "name": "download_file",
         "description": (
             "Read a file from the sandbox and send it to the user for download. "

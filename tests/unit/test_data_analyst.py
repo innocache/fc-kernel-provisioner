@@ -504,3 +504,42 @@ class TestFormatResult:
     def test_empty(self):
         r = DataAnalystAgent._format_result({"success": True, "stdout": "", "stderr": "", "error": None, "outputs": []})
         assert r == "(no output)"
+
+
+class TestDashboardMarkerDetection:
+    def test_extracts_dashboard_path(self):
+        data = {"stdout": "some output\nDASHBOARD:/data/dashboard.html\n", "success": True}
+        path = DataAnalystAgent._extract_dashboard_path(data)
+        assert path == "/data/dashboard.html"
+
+    def test_returns_none_without_marker(self):
+        data = {"stdout": "just normal output\n", "success": True}
+        assert DataAnalystAgent._extract_dashboard_path(data) is None
+
+    def test_returns_none_for_non_html(self):
+        data = {"stdout": "DASHBOARD:/data/report.csv\n", "success": True}
+        assert DataAnalystAgent._extract_dashboard_path(data) is None
+
+    def test_last_marker_wins(self):
+        data = {"stdout": "DASHBOARD:/data/old.html\nDASHBOARD:/data/new.html\n", "success": True}
+        path = DataAnalystAgent._extract_dashboard_path(data)
+        assert path == "/data/new.html"
+
+    def test_ignores_partial_match(self):
+        data = {"stdout": "file at DASHBOARD:/data/test.html is ready\n", "success": True}
+        assert DataAnalystAgent._extract_dashboard_path(data) is None
+
+    def test_strips_marker_from_format_result(self):
+        data = {"stdout": "loaded data\nDASHBOARD:/data/dashboard.html\ndone\n",
+                "stderr": "", "error": None, "outputs": [], "success": True}
+        r = DataAnalystAgent._format_result(data, strip_dashboard_marker=True)
+        assert "DASHBOARD:" not in r
+        assert "loaded data" in r
+        assert "done" in r
+
+    def test_empty_stdout_with_marker(self):
+        data = {"stdout": "DASHBOARD:/data/dashboard.html\n", "success": True}
+        path = DataAnalystAgent._extract_dashboard_path(data)
+        assert path == "/data/dashboard.html"
+        r = DataAnalystAgent._format_result(data, strip_dashboard_marker=True)
+        assert "DASHBOARD:" not in r

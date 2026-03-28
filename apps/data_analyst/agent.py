@@ -8,7 +8,8 @@ from typing import AsyncGenerator
 import httpx
 
 from .config import (
-    CADDY_BASE_URL, DOWNLOAD_MAX_BYTES, RECENT_KEEP_FULL, RECOVERY_CACHE_MAX,
+    CADDY_BASE_URL, DASHBOARD_MARKER_PREFIX, DOWNLOAD_MAX_BYTES,
+    MAX_INLINE_DASHBOARD_BYTES, RECENT_KEEP_FULL, RECOVERY_CACHE_MAX,
     SYSTEM_PROMPT, TOOLS, TRUNCATED_OUTPUT_CHARS, UPLOAD_MAX_BYTES,
     sanitize_filename,
 )
@@ -16,7 +17,7 @@ from .llm_provider import LLMProvider
 
 logger = logging.getLogger(__name__)
 
-_WARMUP_CODE = "%matplotlib inline\nimport numpy, pandas"
+_WARMUP_CODE = "%matplotlib inline\nimport numpy, pandas\nimport os; os.makedirs('/data', exist_ok=True)"
 
 
 @dataclass
@@ -50,13 +51,19 @@ class DashboardLink:
 
 
 @dataclass
+class DashboardHTML:
+    html: bytes
+    filename: str
+
+
+@dataclass
 class FileDownload:
     filename: str
     data: bytes
     mime_type: str
 
 
-AgentEvent = TextDelta | ToolStart | ToolResult | ImageOutput | DashboardLink | FileDownload
+AgentEvent = TextDelta | ToolStart | ToolResult | ImageOutput | DashboardLink | DashboardHTML | FileDownload
 
 
 @dataclass
@@ -189,10 +196,16 @@ class DataAnalystAgent:
 
                 if tc.name == "execute_python_code":
                     result = await self._execute_with_recovery(tc.input["code"])
-                    output = self._format_result(result)
+                    dashboard_path = self._extract_dashboard_path(result)
+                    output = self._format_result(result, strip_dashboard_marker=True)
                     yield ToolResult(tool_name=tc.name, output=output, success=result.get("success", False))
                     for img in self._extract_images(result):
                         yield img
+                    if dashboard_path:
+                        dashboard_event = await self._download_dashboard_html(dashboard_path)
+                        if dashboard_event:
+                            yield dashboard_event
+                            output += "\n[dashboard rendered inline]"
                     tool_results.append(self.provider.format_tool_result(tc.id, output))
 
                 elif tc.name == "launch_dashboard":
@@ -339,10 +352,16 @@ class DataAnalystAgent:
     # ── Result formatting ────────────────────────────────────────────
 
     @staticmethod
-    def _format_result(data: dict) -> str:
+    def _format_result(data: dict, strip_dashboard_marker: bool = False) -> str:
         parts = []
         if data.get("stdout"):
-            parts.append(data["stdout"])
+            stdout = data["stdout"]
+            if strip_dashboard_marker:
+                stdout = "\n".join(
+                    line for line in stdout.splitlines()
+                    if not line.startswith(DASHBOARD_MARKER_PREFIX)
+                )
+            parts.append(stdout)
         if data.get("stderr"):
             parts.append(f"[stderr]: {data['stderr']}")
         if data.get("error"):
@@ -368,6 +387,32 @@ class DataAnalystAgent:
                     mime_type=out["mime_type"],
                 ))
         return images
+
+    @staticmethod
+    def _extract_dashboard_path(data: dict) -> str | None:
+        stdout = data.get("stdout", "")
+        for line in reversed(stdout.splitlines()):
+            if line.startswith(DASHBOARD_MARKER_PREFIX) and line.endswith(".html"):
+                return line[len("DASHBOARD:"):]
+        return None
+
+    async def _download_dashboard_html(self, path: str) -> DashboardHTML | None:
+        filename = path.rsplit("/", 1)[-1]
+        try:
+            client = self._require_client()
+            session_id = self._require_session_id()
+            resp = await client.get(f"/sessions/{session_id}/files/{filename}")
+            if resp.status_code != 200:
+                logger.warning("Dashboard HTML download failed: %s", resp.status_code)
+                return None
+            html_bytes = resp.content
+            if len(html_bytes) > MAX_INLINE_DASHBOARD_BYTES:
+                logger.warning("Dashboard HTML too large for inline rendering (%d bytes)", len(html_bytes))
+                return None
+            return DashboardHTML(html=html_bytes, filename=filename)
+        except Exception as exc:
+            logger.warning("Dashboard HTML download error: %s", exc)
+            return None
 
     # ── Context compaction ───────────────────────────────────────────
 

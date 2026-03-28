@@ -14,7 +14,7 @@ import os
 import pytest
 
 from apps.data_analyst.agent import (
-    DataAnalystAgent, DashboardLink, FileDownload,
+    DataAnalystAgent, DashboardHTML, DashboardLink, FileDownload,
     ImageOutput, TextDelta, ToolResult, ToolStart,
 )
 from apps.data_analyst.llm_provider import LLMResponse, ToolCall
@@ -207,6 +207,113 @@ class TestAgentFileRoundTrip:
             errors = [e for e in events if isinstance(e, ToolResult) and not e.success]
             assert len(errors) == 1
             assert "Cannot read" in errors[0].output or "No such file" in errors[0].output
+        finally:
+            await agent.end_session()
+
+
+class TestPlotlyDashboard:
+    async def test_plotly_dashboard_renders(self):
+        provider = MockProvider([
+            LLMResponse(
+                text=None,
+                tool_calls=[ToolCall(
+                    id="t1", name="execute_python_code",
+                    input={"code": (
+                        "import plotly.express as px\n"
+                        "import pandas as pd\n"
+                        "df = pd.DataFrame({'x': [1,2,3,4,5], 'y': [10,20,15,30,25]})\n"
+                        "fig = px.bar(df, x='x', y='y', title='Test Dashboard')\n"
+                        "fig.write_html('/data/dashboard.html', include_plotlyjs='cdn')\n"
+                        "print('DASHBOARD:/data/dashboard.html')"
+                    )},
+                )],
+                stop_reason="tool_use",
+                raw_content=[],
+            ),
+            LLMResponse(text="Dashboard is ready.", tool_calls=[], stop_reason="end", raw_content=[]),
+        ])
+        agent = DataAnalystAgent(api_url=EXECUTION_API_URL, provider=provider)
+        await agent.start_session()
+        try:
+            events = [e async for e in agent.chat("Create a dashboard")]
+            dashboards = [e for e in events if isinstance(e, DashboardHTML)]
+            assert len(dashboards) == 1
+            assert b"plotly" in dashboards[0].html.lower()
+            assert b"Test Dashboard" in dashboards[0].html
+            assert dashboards[0].filename == "dashboard.html"
+
+            tool_results = [e for e in events if isinstance(e, ToolResult)]
+            assert len(tool_results) == 1
+            assert "DASHBOARD:" not in tool_results[0].output
+        finally:
+            await agent.end_session()
+
+    async def test_plotly_dashboard_iteration(self):
+        provider = MockProvider([
+            LLMResponse(
+                text=None,
+                tool_calls=[ToolCall(
+                    id="t1", name="execute_python_code",
+                    input={"code": (
+                        "import plotly.express as px\n"
+                        "import pandas as pd\n"
+                        "df = pd.DataFrame({'x': [1,2,3], 'y': [10,20,30]})\n"
+                        "fig = px.bar(df, x='x', y='y', title='Version 1')\n"
+                        "fig.write_html('/data/dashboard.html', include_plotlyjs='cdn')\n"
+                        "print('DASHBOARD:/data/dashboard.html')"
+                    )},
+                )],
+                stop_reason="tool_use", raw_content=[],
+            ),
+            LLMResponse(text="Version 1 ready.", tool_calls=[], stop_reason="end", raw_content=[]),
+            LLMResponse(
+                text=None,
+                tool_calls=[ToolCall(
+                    id="t2", name="execute_python_code",
+                    input={"code": (
+                        "import plotly.express as px\n"
+                        "fig = px.scatter(df, x='x', y='y', title='Version 2')\n"
+                        "fig.write_html('/data/dashboard.html', include_plotlyjs='cdn')\n"
+                        "print('DASHBOARD:/data/dashboard.html')"
+                    )},
+                )],
+                stop_reason="tool_use", raw_content=[],
+            ),
+            LLMResponse(text="Updated to scatter.", tool_calls=[], stop_reason="end", raw_content=[]),
+        ])
+        agent = DataAnalystAgent(api_url=EXECUTION_API_URL, provider=provider)
+        await agent.start_session()
+        try:
+            events1 = [e async for e in agent.chat("Create a bar chart dashboard")]
+            d1 = [e for e in events1 if isinstance(e, DashboardHTML)]
+            assert len(d1) == 1
+            assert b"Version 1" in d1[0].html
+
+            events2 = [e async for e in agent.chat("Change to scatter")]
+            d2 = [e for e in events2 if isinstance(e, DashboardHTML)]
+            assert len(d2) == 1
+            assert b"Version 2" in d2[0].html
+        finally:
+            await agent.end_session()
+
+    async def test_no_dashboard_without_marker(self):
+        provider = MockProvider([
+            LLMResponse(
+                text=None,
+                tool_calls=[ToolCall(
+                    id="t1", name="execute_python_code",
+                    input={"code": "print('hello world')"},
+                )],
+                stop_reason="tool_use", raw_content=[],
+            ),
+            LLMResponse(text="Done.", tool_calls=[], stop_reason="end", raw_content=[]),
+        ])
+        agent = DataAnalystAgent(api_url=EXECUTION_API_URL, provider=provider)
+        await agent.start_session()
+        try:
+            events = [e async for e in agent.chat("Say hello")]
+            dashboards = [e for e in events if isinstance(e, DashboardHTML)]
+            assert len(dashboards) == 0
         finally:
             await agent.end_session()
 

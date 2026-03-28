@@ -1,7 +1,7 @@
 import chainlit as cl
 
 from .agent import (
-    DataAnalystAgent, DashboardLink, FileDownload,
+    DataAnalystAgent, DashboardHTML, DashboardLink, FileDownload,
     ImageOutput, TextDelta, ToolResult, ToolStart,
 )
 from .config import EXECUTION_API_URL, LLM_MODEL, LLM_PROVIDER
@@ -55,6 +55,18 @@ async def on_message(message: cl.Message):
             await cl.Message(
                 content="",
                 elements=[cl.Image(content=event.data, name="plot.png", display="inline")],
+            ).send()
+
+        elif isinstance(event, DashboardHTML):
+            import base64 as _b64
+            data_uri = "data:text/html;base64," + _b64.b64encode(event.html).decode()
+            await cl.Message(
+                content=(
+                    f'<iframe src="{data_uri}" '
+                    f'width="100%" height="700" frameborder="0" '
+                    f'sandbox="allow-scripts allow-downloads" '
+                    f'style="border-radius: 8px; border: 1px solid #e0e0e0;"></iframe>'
+                ),
             ).send()
 
         elif isinstance(event, DashboardLink):
