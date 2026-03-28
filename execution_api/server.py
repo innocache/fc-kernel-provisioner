@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 GATEWAY_URL = os.environ.get("GATEWAY_URL", "http://localhost:8888")
 USE_PER_VM_KG = os.environ.get("USE_PER_VM_KG", "false").lower() == "true"
 POOL_MANAGER_URL = os.environ.get("POOL_MANAGER_URL", "http+unix:///var/run/fc-pool.sock")
+VM_GATEWAY_BASE = os.environ.get("VM_GATEWAY_BASE", "")
 SESSION_TTL = int(os.environ.get("SESSION_TTL", "600"))
 MAX_SESSIONS = int(os.environ.get("MAX_SESSIONS", "20"))
 DEFAULT_TIMEOUT = int(os.environ.get("DEFAULT_TIMEOUT", "30"))
@@ -178,9 +179,14 @@ class SessionManager:
         vm_id = vm["vm_id"]
         vm_ip = vm["ip"]
 
+        if VM_GATEWAY_BASE:
+            gateway_url = f"{VM_GATEWAY_BASE}/vm/{vm_id}"
+        else:
+            gateway_url = f"http://{vm_ip}:8888"
+
         timeout = execution_timeout or self._default_timeout
         session = SandboxSession(
-            gateway_url=f"http://{vm_ip}:8888",
+            gateway_url=gateway_url,
             default_timeout=timeout,
             artifact_store=_make_artifact_store(),
             discover_kernel=True,
