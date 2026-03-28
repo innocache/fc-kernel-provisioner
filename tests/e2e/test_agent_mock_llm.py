@@ -76,17 +76,10 @@ class TestAgentAnalysisFlow:
                 tool_calls=[ToolCall(
                     id="t1", name="execute_python_code",
                     input={"code": (
-                        "import matplotlib\n"
-                        "matplotlib.use('Agg')\n"
                         "import matplotlib.pyplot as plt\n"
-                        "import base64, io\n"
                         "plt.plot([1, 2, 3], [10, 20, 30])\n"
                         "plt.title('Test')\n"
-                        "buf = io.BytesIO()\n"
-                        "plt.savefig(buf, format='png')\n"
-                        "buf.seek(0)\n"
-                        "print('CHART:' + base64.b64encode(buf.read()).decode())\n"
-                        "plt.close()"
+                        "plt.show()"
                     )},
                 )],
                 stop_reason="tool_use",
@@ -100,8 +93,10 @@ class TestAgentAnalysisFlow:
             events = [e async for e in agent.chat("Plot a line chart")]
             tool_results = [e for e in events if isinstance(e, ToolResult)]
             assert len(tool_results) == 1
-            assert "CHART:" in tool_results[0].output
             assert tool_results[0].success is True
+            images = [e for e in events if isinstance(e, ImageOutput)]
+            assert len(images) >= 1
+            assert images[0].mime_type == "image/png"
         finally:
             await agent.end_session()
 
