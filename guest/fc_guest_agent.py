@@ -207,8 +207,6 @@ def pre_warm_with_kg() -> dict:
         "--KernelGatewayApp.prespawn_count=1",
         "--JupyterWebsocketPersonality.list_kernels=True",
     ]
-    if os.path.isfile(_SEED_NOTEBOOK):
-        kg_cmd.append(f"--KernelGatewayApp.seed_uri={_SEED_NOTEBOOK}")
 
     kg_log = open("/tmp/kg.log", "w")
     _kg_proc = subprocess.Popen(
