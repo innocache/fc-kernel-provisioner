@@ -167,6 +167,8 @@ class DataAnalystAgent:
 
     # ── Chat loop ────────────────────────────────────────────────────
 
+    _MAX_DASHBOARD_ATTEMPTS = 3
+
     async def chat(self, user_message: str) -> AsyncGenerator[AgentEvent, None]:
         await self._ensure_session()
         self.messages.append({"role": "user", "content": user_message})
@@ -177,6 +179,7 @@ class DataAnalystAgent:
             messages=self.messages, system=system, tools=TOOLS,
         )
 
+        dashboard_attempts = 0
         while response.stop_reason == "tool_use":
             self.messages.append({"role": "assistant", "content": response.raw_content})
             tool_results = []
@@ -193,10 +196,18 @@ class DataAnalystAgent:
                     tool_results.append(self.provider.format_tool_result(tc.id, output))
 
                 elif tc.name == "launch_dashboard":
-                    dash = await self._launch_dashboard(tc.input["code"])
-                    tool_results.append(self.provider.format_tool_result(tc.id, dash["text"]))
-                    if dash.get("link"):
-                        yield dash["link"]
+                    dashboard_attempts += 1
+                    if dashboard_attempts > self._MAX_DASHBOARD_ATTEMPTS:
+                        msg = (f"Dashboard failed after {self._MAX_DASHBOARD_ATTEMPTS} attempts. "
+                               "Explain the issue to the user instead of retrying.")
+                        tool_results.append(self.provider.format_tool_result(tc.id, msg))
+                        yield ToolResult(tool_name=tc.name, output=msg, success=False)
+                    else:
+                        dash = await self._launch_dashboard(tc.input["code"])
+                        tool_results.append(self.provider.format_tool_result(tc.id, dash["text"]))
+                        if dash.get("link"):
+                            yield dash["link"]
+                            dashboard_attempts = 0
 
                 elif tc.name == "download_file":
                     try:

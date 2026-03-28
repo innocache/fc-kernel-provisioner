@@ -87,9 +87,7 @@ class TestCaddyClient:
         route = client._build_route("sess1", "172.16.0.2:5006")
         assert route["@id"] == "dashboard_sess1"
         assert route["match"] == [{"path": ["/dash/sess1/*"]}]
-        rewrite = route["handle"][0]
-        assert rewrite["handler"] == "rewrite"
-        assert rewrite["strip_path_prefix"] == "/dash/sess1"
-        rp = route["handle"][1]
+        assert len(route["handle"]) == 1
+        rp = route["handle"][0]
         assert rp["handler"] == "reverse_proxy"
         assert rp["upstreams"] == [{"dial": "172.16.0.2:5006"}]

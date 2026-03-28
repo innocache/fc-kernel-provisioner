@@ -25,10 +25,6 @@ class CaddyClient:
             "match": [{"path": [f"/dash/{route_id}/*"]}],
             "handle": [
                 {
-                    "handler": "rewrite",
-                    "strip_path_prefix": f"/dash/{route_id}",
-                },
-                {
                     "handler": "reverse_proxy",
                     "upstreams": [{"dial": upstream}],
                     "flush_interval": -1,

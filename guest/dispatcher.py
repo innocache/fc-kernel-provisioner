@@ -14,36 +14,43 @@ _current_file = None
 
 
 def _latest_dashboard():
+    app_file = os.path.join(_APP_DIR, "app.py")
+    if os.path.isfile(app_file):
+        return app_file
+    return None
+
+
+def _read_prefix():
     try:
-        apps = [f for f in os.listdir(_APP_DIR)
-                if f.startswith("dash_") and f.endswith(".py")]
+        with open(os.path.join(_APP_DIR, ".prefix")) as f:
+            return f.read().strip()
     except FileNotFoundError:
-        return None
-    if not apps:
-        return None
-    apps.sort(key=lambda f: os.path.getmtime(os.path.join(_APP_DIR, f)), reverse=True)
-    return os.path.join(_APP_DIR, apps[0])
+        return ""
 
 
 def _start_panel(script_path):
     global _panel_proc, _current_file
     _stop_panel()
 
+    prefix = _read_prefix()
     python = sys.executable or "/usr/bin/python3"
+    cmd = [
+        python, "-m", "panel", "serve", script_path,
+        "--port", str(_PORT),
+        "--address", "0.0.0.0",
+        "--allow-websocket-origin", "*",
+        "--num-procs", "1",
+    ]
+    if prefix:
+        cmd.extend(["--prefix", prefix])
     _panel_proc = subprocess.Popen(
-        [
-            python, "-m", "panel", "serve", script_path,
-            "--port", str(_PORT),
-            "--address", "0.0.0.0",
-            "--allow-websocket-origin", "*",
-            "--num-procs", "1",
-        ],
+        cmd,
         stdout=open("/tmp/panel-serve.log", "w"),
         stderr=subprocess.STDOUT,
         start_new_session=True,
     )
     _current_file = script_path
-    print(f"[dispatcher] started panel serve {script_path} (pid={_panel_proc.pid})", flush=True)
+    print(f"[dispatcher] started panel serve {script_path} prefix={prefix!r} (pid={_panel_proc.pid})", flush=True)
 
 
 def _stop_panel():

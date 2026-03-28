@@ -640,14 +640,30 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
                     detail=f"dashboard code failed pre-flight check:\n{error_detail}",
                 )
 
+            prefix = f"/dash/{kernel_id}"
             try:
                 await entry.session.execute(
                     "import os, tempfile\n"
                     f"code = '''{escaped}'''\n"
                     "tmp = tempfile.mktemp(dir='/apps', suffix='.py')\n"
                     "with open(tmp, 'w') as f: f.write(code)\n"
-                    f"os.replace(tmp, '/apps/dash_{app_id}.py')\n"
+                    "os.replace(tmp, '/apps/app.py')\n"
+                    f"with open('/apps/.prefix', 'w') as f: f.write('{prefix}')\n"
                     "print('dashboard deployed')"
+                )
+                await entry.session.execute(
+                    "import time, urllib.request\n"
+                    "for _ in range(20):\n"
+                    "    try:\n"
+                    f"        r = urllib.request.urlopen('http://127.0.0.1:5006{prefix}/app', timeout=2)\n"
+                    "        if r.status == 200:\n"
+                    "            print('panel ready')\n"
+                    "            break\n"
+                    "    except Exception:\n"
+                    "        pass\n"
+                    "    time.sleep(0.5)\n"
+                    "else:\n"
+                    "    print('panel not ready after 10s')\n"
                 )
             except Exception as exc:
                 raise HTTPException(status_code=503, detail=f"dashboard deploy error: {exc}")

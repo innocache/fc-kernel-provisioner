@@ -731,7 +731,10 @@ class TestDashboardEndpoints:
         deploy = ExecutionResult(
             success=True, stdout="dashboard deployed\n", stderr="", error=None, outputs=[], execution_count=2,
         )
-        return [preflight, deploy]
+        ready = ExecutionResult(
+            success=True, stdout="panel ready\n", stderr="", error=None, outputs=[], execution_count=3,
+        )
+        return [preflight, deploy, ready]
 
     async def test_launch_dashboard_success(self, client):
         c, mock = client
@@ -743,7 +746,7 @@ class TestDashboardEndpoints:
         assert data["session_id"] == sid
         assert "/dash/" in data["url"]
         assert "test-kernel-id" in data["url"]
-        assert mock.execute.await_count == 2
+        assert mock.execute.await_count == 3
 
     async def test_launch_dashboard_session_not_found(self, client):
         c, _ = client
