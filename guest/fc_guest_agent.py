@@ -155,7 +155,10 @@ def start_kernel(ports: dict, ip: str) -> int:
 
 
 _DISPATCHER_PATH = "/opt/agent/dispatcher.py"
+_SEED_NOTEBOOK = "/opt/agent/seed_warm_imports.ipynb"
+_KG_PORT = 8888
 _dispatcher_proc = None
+_kg_proc = None
 
 
 def pre_warm_kernel() -> dict:
@@ -184,6 +187,67 @@ def pre_warm_kernel() -> dict:
         _wait_for_dispatcher()
 
     return {"ports": _kernel_ports, "pid": pid, "panel_port": 5006}
+
+
+def pre_warm_with_kg() -> dict:
+    """Start KG with prespawn_count=1 (KG owns the kernel).
+
+    Used for per-VM KG mode. KG spawns one kernel at startup and runs
+    the seed notebook for warm imports. The Execution API discovers
+    the kernel via GET /api/kernels.
+    """
+    global _kg_proc, _dispatcher_proc
+
+    python = sys.executable or "/usr/bin/python3"
+
+    kg_cmd = [
+        python, "-m", "jupyter", "kernelgateway",
+        f"--KernelGatewayApp.ip=0.0.0.0",
+        f"--KernelGatewayApp.port={_KG_PORT}",
+        "--KernelGatewayApp.prespawn_count=1",
+        "--JupyterWebsocketPersonality.list_kernels=True",
+    ]
+    if os.path.isfile(_SEED_NOTEBOOK):
+        kg_cmd.append(f"--KernelGatewayApp.seed_uri={_SEED_NOTEBOOK}")
+
+    kg_log = open("/tmp/kg.log", "w")
+    _kg_proc = subprocess.Popen(
+        kg_cmd,
+        stdout=kg_log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    kg_log.close()
+
+    _wait_for_kg()
+
+    if os.path.isfile(_DISPATCHER_PATH):
+        os.makedirs("/apps", exist_ok=True)
+        _dispatcher_proc = subprocess.Popen(
+            [python, _DISPATCHER_PATH],
+            stdout=open("/tmp/dispatcher.log", "w"),
+            stderr=subprocess.STDOUT,
+        )
+        _wait_for_dispatcher()
+
+    return {"kg_port": _KG_PORT}
+
+
+def _wait_for_kg(timeout: float = 90.0) -> None:
+    import urllib.request
+    deadline = time.monotonic() + timeout
+    url = f"http://127.0.0.1:{_KG_PORT}/api/kernels"
+    while time.monotonic() < deadline:
+        if _kg_proc is not None and _kg_proc.poll() is not None:
+            raise RuntimeError(f"KG process exited with code {_kg_proc.poll()}")
+        try:
+            resp = urllib.request.urlopen(url, timeout=2)
+            if resp.status == 200:
+                return
+        except Exception:
+            pass
+        time.sleep(0.5)
+    raise RuntimeError(f"KG did not become ready at {url} within {timeout}s")
 
 
 def _wait_for_dispatcher(timeout: float = 60.0) -> None:
@@ -372,6 +436,13 @@ def handle_message(data: bytes) -> bytes:
     elif action == "pre_warm_kernel":
         try:
             info = pre_warm_kernel()
+            return _encode_response({"status": "ok", **info})
+        except Exception as e:
+            return _encode_response({"status": "error", "message": str(e)})
+
+    elif action == "pre_warm_with_kg":
+        try:
+            info = pre_warm_with_kg()
             return _encode_response({"status": "ok", **info})
         except Exception as e:
             return _encode_response({"status": "error", "message": str(e)})

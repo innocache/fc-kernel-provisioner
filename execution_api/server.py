@@ -14,6 +14,7 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -43,6 +44,8 @@ logger = logging.getLogger(__name__)
 # ── Configuration ────────────────────────────────────────────────────────
 
 GATEWAY_URL = os.environ.get("GATEWAY_URL", "http://localhost:8888")
+USE_PER_VM_KG = os.environ.get("USE_PER_VM_KG", "false").lower() == "true"
+POOL_MANAGER_URL = os.environ.get("POOL_MANAGER_URL", "http+unix:///var/run/fc-pool.sock")
 SESSION_TTL = int(os.environ.get("SESSION_TTL", "600"))
 MAX_SESSIONS = int(os.environ.get("MAX_SESSIONS", "20"))
 DEFAULT_TIMEOUT = int(os.environ.get("DEFAULT_TIMEOUT", "30"))
@@ -60,6 +63,13 @@ _SAFE_FILENAME_RE = re.compile(r"^[a-zA-Z0-9_.\-]+$")
 # ── Session Manager ──────────────────────────────────────────────────────
 
 
+class SessionState(Enum):
+    CREATING = "creating"
+    ACTIVE = "active"
+    CLOSING = "closing"
+    CLOSED = "closed"
+
+
 @dataclass
 class SessionEntry:
     session: SandboxSession
@@ -68,6 +78,9 @@ class SessionEntry:
     last_active: float
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     active_dashboard: str | None = None
+    state: SessionState = SessionState.ACTIVE
+    vm_id: str | None = None
+    vm_ip: str | None = None
 
 
 def _make_artifact_store() -> LocalArtifactStore | None:
@@ -85,6 +98,7 @@ class SessionManager:
         default_timeout: int = DEFAULT_TIMEOUT,
         max_sessions: int = MAX_SESSIONS,
         session_ttl: int = SESSION_TTL,
+        pool_client: "PoolClient | None" = None,
     ):
         self._gateway_url = gateway_url
         self._default_timeout = default_timeout
@@ -93,6 +107,7 @@ class SessionManager:
         self._sessions: dict[str, SessionEntry] = {}
         self._cleanup_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
+        self._pool_client = pool_client
 
     @property
     def gateway_url(self) -> str:
@@ -111,6 +126,11 @@ class SessionManager:
         return self._sessions
 
     async def create(self, execution_timeout: int | None = None) -> SessionEntry:
+        if self._pool_client is not None:
+            return await self._create_per_vm(execution_timeout)
+        return await self._create_central_kg(execution_timeout)
+
+    async def _create_central_kg(self, execution_timeout: int | None = None) -> SessionEntry:
         async with self._lock:
             if len(self._sessions) >= self._max_sessions:
                 raise RuntimeError("max sessions reached")
@@ -121,14 +141,6 @@ class SessionManager:
                 default_timeout=timeout,
                 artifact_store=_make_artifact_store(),
             )
-            try:
-                await session.start()
-            except Exception:
-                try:
-                    await session.stop()
-                except Exception:
-                    pass
-                raise
 
             session_id = uuid.uuid4().hex
             now = time.time()
@@ -137,18 +149,97 @@ class SessionManager:
                 session_id=session_id,
                 created_at=now,
                 last_active=now,
-                active_dashboard=None,
+                state=SessionState.CREATING,
             )
             self._sessions[session_id] = entry
+
+            try:
+                await session.start()
+            except Exception:
+                entry.state = SessionState.CLOSING
+                try:
+                    await session.stop()
+                except Exception:
+                    logger.debug("Failed to stop session during create cleanup", exc_info=True)
+                entry.state = SessionState.CLOSED
+                self._sessions.pop(session_id, None)
+                raise
+
+            entry.state = SessionState.ACTIVE
             return entry
 
+    async def _create_per_vm(self, execution_timeout: int | None = None) -> SessionEntry:
+        assert self._pool_client is not None
+        async with self._lock:
+            if len(self._sessions) >= self._max_sessions:
+                raise RuntimeError("max sessions reached")
+
+        vm = await self._pool_client.acquire()
+        vm_id = vm["vm_id"]
+        vm_ip = vm["ip"]
+
+        timeout = execution_timeout or self._default_timeout
+        session = SandboxSession(
+            gateway_url=f"http://{vm_ip}:8888",
+            default_timeout=timeout,
+            artifact_store=_make_artifact_store(),
+            discover_kernel=True,
+        )
+
+        session_id = uuid.uuid4().hex
+        now = time.time()
+        entry = SessionEntry(
+            session=session,
+            session_id=session_id,
+            created_at=now,
+            last_active=now,
+            state=SessionState.CREATING,
+            vm_id=vm_id,
+            vm_ip=vm_ip,
+        )
+
+        async with self._lock:
+            self._sessions[session_id] = entry
+
+        try:
+            await session.start()
+        except Exception:
+            entry.state = SessionState.CLOSING
+            try:
+                await session.stop()
+            except Exception:
+                logger.debug("Failed to stop session during create cleanup", exc_info=True)
+            try:
+                await self._pool_client.destroy(vm_id)
+            except Exception:
+                logger.debug("Failed to destroy VM %s during create cleanup", vm_id, exc_info=True)
+            entry.state = SessionState.CLOSED
+            async with self._lock:
+                self._sessions.pop(session_id, None)
+            raise
+
+        entry.state = SessionState.ACTIVE
+        return entry
+
     def get(self, session_id: str) -> SessionEntry | None:
-        return self._sessions.get(session_id)
+        entry = self._sessions.get(session_id)
+        if entry is None:
+            return None
+        if entry.state in (SessionState.CLOSING, SessionState.CLOSED):
+            return None
+        return entry
 
     async def delete(self, session_id: str) -> bool:
-        entry = self._sessions.pop(session_id, None)
-        if entry is None:
-            return False
+        return await self.destroy(session_id)
+
+    async def destroy(self, session_id: str) -> bool:
+        async with self._lock:
+            entry = self._sessions.get(session_id)
+            if entry is None:
+                return False
+            if entry.state in (SessionState.CLOSING, SessionState.CLOSED):
+                return True
+            entry.state = SessionState.CLOSING
 
         async with entry.lock:
             entry.active_dashboard = None
@@ -156,6 +247,17 @@ class SessionManager:
                 await entry.session.stop()
             except Exception:
                 logger.debug("Failed to stop session %s", session_id, exc_info=True)
+            if entry.vm_id and self._pool_client:
+                try:
+                    await self._pool_client.destroy(entry.vm_id)
+                except Exception:
+                    logger.debug("Failed to destroy VM %s", entry.vm_id, exc_info=True)
+
+        async with self._lock:
+            current = self._sessions.get(session_id)
+            if current is entry:
+                entry.state = SessionState.CLOSED
+                self._sessions.pop(session_id, None)
         return True
 
     def list_sessions(self) -> list[SessionEntry]:
@@ -168,7 +270,7 @@ class SessionManager:
             if now - entry.last_active > self._session_ttl
         ]
         for sid in expired:
-            await self.delete(sid)
+            await self.destroy(sid)
 
     def start_cleanup_task(self) -> None:
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
@@ -190,9 +292,11 @@ class SessionManager:
                 pass
         for sid in list(self._sessions):
             try:
-                await self.delete(sid)
+                await self.destroy(sid)
             except Exception:
                 pass
+        if self._pool_client:
+            await self._pool_client.close()
 
 
 # ── Result Conversion ────────────────────────────────────────────────────
@@ -302,7 +406,12 @@ _cleanup_tasks: set[asyncio.Task] = set()
 
 def create_app(session_manager: SessionManager | None = None) -> FastAPI:
     if session_manager is None:
-        session_manager = SessionManager()
+        pool_client = None
+        if USE_PER_VM_KG:
+            from execution_api.pool_client import PoolClient
+            pool_client = PoolClient(POOL_MANAGER_URL)
+            logger.info("Per-VM KG mode enabled (pool: %s)", POOL_MANAGER_URL)
+        session_manager = SessionManager(pool_client=pool_client)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -362,7 +471,7 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
 
     @app.delete("/sessions/{session_id}", response_model=DeleteResponse)
     async def delete_session(session_id: str):
-        deleted = await session_manager.delete(session_id)
+        deleted = await session_manager.destroy(session_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="session not found")
         return DeleteResponse()
@@ -376,10 +485,16 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
         entry = session_manager.get(session_id)
         if entry is None:
             raise HTTPException(status_code=404, detail="session not found")
+        if entry.state is not SessionState.ACTIVE:
+            raise HTTPException(status_code=409, detail="session not active")
         try:
             async with entry.lock:
+                if entry.state is not SessionState.ACTIVE:
+                    raise HTTPException(status_code=409, detail="session not active")
                 entry.last_active = time.time()
                 result = await entry.session.execute(req.code)
+        except HTTPException:
+            raise
         except Exception as exc:
             logger.error("Execute failed for session %s: %s", session_id, exc)
             raise HTTPException(status_code=503, detail=f"sandbox unavailable: {exc}")

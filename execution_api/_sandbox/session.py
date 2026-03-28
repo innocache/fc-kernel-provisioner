@@ -38,11 +38,13 @@ class SandboxSession:
         self,
         gateway_url: str = "http://localhost:8888",
         kernel_name: str = "python3-firecracker",
+        discover_kernel: bool = False,
         default_timeout: float = 30.0,
         artifact_store: ArtifactStore | None = None,
     ):
         self._gateway_url = gateway_url.rstrip("/")
         self._kernel_name = kernel_name
+        self._discover_kernel = discover_kernel
         self._default_timeout = default_timeout
         self._artifact_store = artifact_store
 
@@ -58,15 +60,23 @@ class SandboxSession:
         """Create a kernel and open a WebSocket connection."""
         self._http = aiohttp.ClientSession()
 
-        resp = await self._http.post(
-            f"{self._gateway_url}/api/kernels",
-            json={"name": self._kernel_name},
-        )
-        if resp.status == 503:
-            raise RuntimeError("No VMs available")
-        resp.raise_for_status()
-        data = await resp.json()
-        self._kernel_id = data["id"]
+        if self._discover_kernel:
+            resp = await self._http.get(f"{self._gateway_url}/api/kernels")
+            resp.raise_for_status()
+            kernels = await resp.json()
+            if not kernels:
+                raise RuntimeError("No kernel available in VM")
+            self._kernel_id = kernels[0]["id"]
+        else:
+            resp = await self._http.post(
+                f"{self._gateway_url}/api/kernels",
+                json={"name": self._kernel_name},
+            )
+            if resp.status == 503:
+                raise RuntimeError("No VMs available")
+            resp.raise_for_status()
+            data = await resp.json()
+            self._kernel_id = data["id"]
 
         ws_url = self._gateway_url.replace("http://", "ws://").replace("https://", "wss://")
         self._ws_ctx = self._http.ws_connect(
@@ -90,7 +100,7 @@ class SandboxSession:
             self._ws_ctx = None
             self._ws = None
 
-        if self._http is not None and self._kernel_id is not None:
+        if self._http is not None and self._kernel_id is not None and not self._discover_kernel:
             try:
                 await self._http.delete(
                     f"{self._gateway_url}/api/kernels/{self._kernel_id}",

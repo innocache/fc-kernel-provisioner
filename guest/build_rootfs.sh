@@ -86,16 +86,17 @@ cp /etc/resolv.conf "$ROOTFS_DIR/etc/resolv.conf" 2>/dev/null || true
 
 echo "==> Installing Python packages"
 chroot "$ROOTFS_DIR" pip3 install --break-system-packages \
-    ipykernel jupyter-client \
+    ipykernel jupyter-client jupyter_kernel_gateway \
     plotly seaborn bokeh panel hvplot
 
 echo "==> Installing guest agent"
 cp "$SCRIPT_DIR/fc_guest_agent.py" "$ROOTFS_DIR/usr/local/bin/fc-guest-agent"
 chmod +x "$ROOTFS_DIR/usr/local/bin/fc-guest-agent"
 
-echo "==> Installing Panel dispatcher"
+echo "==> Installing Panel dispatcher and seed notebook"
 mkdir -p "$ROOTFS_DIR/opt/agent"
 cp "$SCRIPT_DIR/dispatcher.py" "$ROOTFS_DIR/opt/agent/dispatcher.py"
+cp "$SCRIPT_DIR/seed_warm_imports.ipynb" "$ROOTFS_DIR/opt/agent/seed_warm_imports.ipynb"
 
 echo "==> Installing init script"
 cp "$SCRIPT_DIR/init.sh" "$ROOTFS_DIR/init"
