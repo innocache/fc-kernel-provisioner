@@ -8,3 +8,5 @@ build/
 .worktrees/
 .chainlit/
 .DS_Store
+.files/
+car_sales.csv
