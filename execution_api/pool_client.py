@@ -40,11 +40,11 @@ class PoolClient:
             resp.raise_for_status()
 
     async def health_check(self, vm_ip: str, port: int = 8888) -> bool:
-        session = self._get_session()
         url = f"http://{vm_ip}:{port}/api/kernels"
         try:
-            async with session.get(url) as resp:
-                return resp.status == 200
+            async with aiohttp.ClientSession() as tcp_session:
+                async with tcp_session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    return resp.status == 200
         except Exception:
             return False
 

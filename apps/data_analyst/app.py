@@ -58,7 +58,11 @@ async def on_message(message: cl.Message):
             ).send()
 
         elif isinstance(event, DashboardHTML):
+            import tempfile
             html_escaped = event.html.decode("utf-8", errors="replace").replace("&", "&amp;").replace('"', "&quot;")
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f"_{event.filename}")
+            tmp.write(event.html)
+            tmp.close()
             await cl.Message(
                 content=(
                     f'<iframe srcdoc="{html_escaped}" '
@@ -66,6 +70,7 @@ async def on_message(message: cl.Message):
                     f'sandbox="allow-scripts allow-same-origin allow-downloads" '
                     f'style="border-radius: 8px; border: 1px solid #e0e0e0;"></iframe>'
                 ),
+                elements=[cl.File(name=event.filename, path=tmp.name, display="side")],
             ).send()
 
         elif isinstance(event, DashboardLink):
