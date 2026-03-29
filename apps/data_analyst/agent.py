@@ -18,11 +18,9 @@ from .llm_provider import LLMProvider
 logger = logging.getLogger(__name__)
 
 _WARMUP_CODE = (
-    "import sys, os\n"
+    "import numpy, pandas, matplotlib, os\n"
+    "matplotlib.use('Agg')\n"
     "os.makedirs('/data', exist_ok=True)\n"
-    "if 'pandas' not in sys.modules:\n"
-    "    import numpy, pandas\n"
-    "    %matplotlib inline\n"
     "print('ready')"
 )
 

@@ -219,7 +219,6 @@ def pre_warm_with_kg() -> dict:
 
     _wait_for_kg()
     kernel_id = _discover_kernel_id()
-    _run_warm_up(kernel_id)
 
     if os.path.isfile(_DISPATCHER_PATH):
         os.makedirs("/apps", exist_ok=True)

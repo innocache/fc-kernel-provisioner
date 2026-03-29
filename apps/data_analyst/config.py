@@ -54,8 +54,19 @@ INTERACTIVE DASHBOARDS:
 - Each iteration OVERWRITES /data/dashboard.html — the user sees the latest version
 - Do NOT use Panel, Bokeh, or hvplot for dashboards — use Plotly only
 
+CHART RENDERING:
+- matplotlib Agg backend is pre-configured. Do NOT call plt.show().
+- To display a chart, save to a buffer and use IPython display:
+    import io
+    from IPython.display import display, Image
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+    buf.seek(0)
+    display(Image(data=buf.read()))
+    plt.close(fig)
+- This pattern works for all chart types (subplots, seaborn, etc.)
+
 RULES:
-- Do NOT call matplotlib.use('Agg') — the inline backend is pre-configured
 - Print results explicitly — the chat only sees stdout and images
 - For large DataFrames, show .head() or .describe(), not the full frame
 - Handle errors gracefully — if code fails, explain and retry
