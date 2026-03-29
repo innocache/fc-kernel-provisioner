@@ -40,19 +40,69 @@ def _start_fake_kg():
 
 
 def _start_execution_api():
-    kg_url = f"http://localhost:{_KG_PORT}"
-    os.environ["GATEWAY_URL"] = kg_url
-
     from execution_api.server import create_app, SessionManager
     import uvicorn
 
-    mgr = SessionManager(
-        gateway_url=kg_url,
+    mock_pool = AsyncMock()
+    mock_pool.acquire.return_value = {
+        "vm_id": "vm-fake-001",
+        "id": "vm-fake-001",
+        "ip": "localhost",
+        "kg_port": _KG_PORT,
+    }
+    mock_pool.destroy.return_value = None
+    mock_pool.health_check.return_value = True
+    mock_pool.close.return_value = None
+
+    class _FakePoolSessionManager(SessionManager):
+        async def create(self, execution_timeout=None):
+            async with self._lock:
+                if len(self._sessions) >= self._max_sessions:
+                    raise RuntimeError("max sessions reached")
+
+            from execution_api._sandbox.session import SandboxSession
+            from execution_api.server import _make_artifact_store, SessionState, SessionEntry
+            import uuid
+            timeout = execution_timeout or self._default_timeout
+            session = SandboxSession(
+                gateway_url=f"http://localhost:{_KG_PORT}",
+                default_timeout=timeout,
+                artifact_store=_make_artifact_store(),
+            )
+            session_id = uuid.uuid4().hex
+            now = time.time()
+            entry = SessionEntry(
+                session=session,
+                session_id=session_id,
+                created_at=now,
+                last_active=now,
+                state=SessionState.CREATING,
+                vm_id="vm-fake-001",
+                vm_ip="localhost",
+            )
+            async with self._lock:
+                self._sessions[session_id] = entry
+            try:
+                await session.start()
+            except Exception:
+                entry.state = SessionState.CLOSING
+                try:
+                    await session.stop()
+                except Exception:
+                    pass
+                entry.state = SessionState.CLOSED
+                async with self._lock:
+                    self._sessions.pop(session_id, None)
+                raise
+            entry.state = SessionState.ACTIVE
+            return entry
+
+    mgr = _FakePoolSessionManager(
+        pool_client=mock_pool,
         default_timeout=30,
         max_sessions=50,
         session_ttl=600,
     )
-    mgr._lookup_vm_id = AsyncMock(return_value="vm-fake-001")
     app = create_app(session_manager=mgr)
 
     config = uvicorn.Config(app, host="localhost", port=_API_PORT, log_level="error")

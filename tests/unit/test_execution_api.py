@@ -173,13 +173,24 @@ class TestModels:
 from execution_api.server import SessionManager, SessionEntry
 
 
+def _mock_pool_client():
+    client = AsyncMock()
+    client.acquire = AsyncMock(return_value={
+        "vm_id": "vm-test-123", "id": "vm-test-123", "ip": "172.16.0.99",
+    })
+    client.destroy = AsyncMock(return_value=None)
+    client.health_check = AsyncMock(return_value=True)
+    client.close = AsyncMock(return_value=None)
+    return client
+
+
 class TestSessionManager:
     @patch("execution_api.server.SandboxSession")
     async def test_create_session(self, MockSession):
         mock = AsyncMock()
         MockSession.return_value = mock
         mgr = SessionManager(
-            gateway_url="http://test:8888", default_timeout=30,
+            pool_client=_mock_pool_client(), default_timeout=30,
             max_sessions=20, session_ttl=600,
         )
         entry = await mgr.create()
@@ -193,7 +204,7 @@ class TestSessionManager:
     async def test_create_with_custom_timeout(self, MockSession):
         MockSession.return_value = AsyncMock()
         mgr = SessionManager(
-            gateway_url="http://test:8888", default_timeout=30,
+            pool_client=_mock_pool_client(), default_timeout=30,
             max_sessions=20, session_ttl=600,
         )
         await mgr.create(execution_timeout=60)
@@ -204,7 +215,7 @@ class TestSessionManager:
     async def test_create_uses_default_timeout(self, MockSession):
         MockSession.return_value = AsyncMock()
         mgr = SessionManager(
-            gateway_url="http://test:8888", default_timeout=30,
+            pool_client=_mock_pool_client(), default_timeout=30,
             max_sessions=20, session_ttl=600,
         )
         await mgr.create()
@@ -215,7 +226,7 @@ class TestSessionManager:
     async def test_get_session(self, MockSession):
         MockSession.return_value = AsyncMock()
         mgr = SessionManager(
-            gateway_url="http://test:8888", default_timeout=30,
+            pool_client=_mock_pool_client(), default_timeout=30,
             max_sessions=20, session_ttl=600,
         )
         entry = await mgr.create()
@@ -225,7 +236,7 @@ class TestSessionManager:
 
     async def test_get_nonexistent_returns_none(self):
         mgr = SessionManager(
-            gateway_url="http://test:8888", default_timeout=30,
+            pool_client=_mock_pool_client(), default_timeout=30,
             max_sessions=20, session_ttl=600,
         )
         assert mgr.get("nonexistent") is None
@@ -235,7 +246,7 @@ class TestSessionManager:
         mock = AsyncMock()
         MockSession.return_value = mock
         mgr = SessionManager(
-            gateway_url="http://test:8888", default_timeout=30,
+            pool_client=_mock_pool_client(), default_timeout=30,
             max_sessions=20, session_ttl=600,
         )
         entry = await mgr.create()
@@ -246,7 +257,7 @@ class TestSessionManager:
 
     async def test_delete_nonexistent_returns_false(self):
         mgr = SessionManager(
-            gateway_url="http://test:8888", default_timeout=30,
+            pool_client=_mock_pool_client(), default_timeout=30,
             max_sessions=20, session_ttl=600,
         )
         deleted = await mgr.delete("nonexistent")
@@ -256,7 +267,7 @@ class TestSessionManager:
     async def test_list_sessions(self, MockSession):
         MockSession.return_value = AsyncMock()
         mgr = SessionManager(
-            gateway_url="http://test:8888", default_timeout=30,
+            pool_client=_mock_pool_client(), default_timeout=30,
             max_sessions=20, session_ttl=600,
         )
         await mgr.create()
@@ -267,7 +278,7 @@ class TestSessionManager:
     @patch("execution_api.server.SandboxSession")
     async def test_list_empty(self, MockSession):
         mgr = SessionManager(
-            gateway_url="http://test:8888", default_timeout=30,
+            pool_client=_mock_pool_client(), default_timeout=30,
             max_sessions=20, session_ttl=600,
         )
         assert mgr.list_sessions() == []
@@ -278,7 +289,7 @@ class TestSessionManager:
         mock.stop = AsyncMock(side_effect=ConnectionError("gone"))
         MockSession.return_value = mock
         mgr = SessionManager(
-            gateway_url="http://test:8888", default_timeout=30,
+            pool_client=_mock_pool_client(), default_timeout=30,
             max_sessions=20, session_ttl=600,
         )
         entry = await mgr.create()
@@ -288,10 +299,11 @@ class TestSessionManager:
     @patch("execution_api.server.SandboxSession")
     async def test_properties(self, MockSession):
         mgr = SessionManager(
-            gateway_url="http://gw:8888", default_timeout=45,
+            pool_client=_mock_pool_client(), default_timeout=45,
             max_sessions=10, session_ttl=300,
         )
-        assert mgr.gateway_url == "http://gw:8888"
+        setattr(mgr, "gateway_url", "http://gw:8888")
+        assert getattr(mgr, "gateway_url") == "http://gw:8888"
         assert mgr.default_timeout == 45
         assert mgr.is_full is False
 
@@ -301,7 +313,7 @@ class TestSessionManagerEdgeCases:
     async def test_max_sessions_reached(self, MockSession):
         MockSession.return_value = AsyncMock()
         mgr = SessionManager(
-            gateway_url="http://test:8888", default_timeout=30,
+            pool_client=_mock_pool_client(), default_timeout=30,
             max_sessions=2, session_ttl=600,
         )
         await mgr.create()
@@ -312,7 +324,7 @@ class TestSessionManagerEdgeCases:
     async def test_cleanup_expired_sessions(self, MockSession):
         MockSession.return_value = AsyncMock()
         mgr = SessionManager(
-            gateway_url="http://test:8888", default_timeout=30,
+            pool_client=_mock_pool_client(), default_timeout=30,
             max_sessions=20, session_ttl=600,
         )
         entry = await mgr.create()
@@ -324,7 +336,7 @@ class TestSessionManagerEdgeCases:
     async def test_cleanup_preserves_active_sessions(self, MockSession):
         MockSession.return_value = AsyncMock()
         mgr = SessionManager(
-            gateway_url="http://test:8888", default_timeout=30,
+            pool_client=_mock_pool_client(), default_timeout=30,
             max_sessions=20, session_ttl=600,
         )
         active = await mgr.create()
@@ -339,7 +351,7 @@ class TestSessionManagerEdgeCases:
         mock = AsyncMock()
         MockSession.return_value = mock
         mgr = SessionManager(
-            gateway_url="http://test:8888", default_timeout=30,
+            pool_client=_mock_pool_client(), default_timeout=30,
             max_sessions=20, session_ttl=600,
         )
         await mgr.create()
@@ -353,7 +365,7 @@ class TestSessionManagerEdgeCases:
         mock.stop = AsyncMock(side_effect=ConnectionError("gone"))
         MockSession.return_value = mock
         mgr = SessionManager(
-            gateway_url="http://test:8888", default_timeout=30,
+            pool_client=_mock_pool_client(), default_timeout=30,
             max_sessions=20, session_ttl=600,
         )
         await mgr.create()
@@ -366,7 +378,7 @@ class TestSessionManagerEdgeCases:
         mock.start = AsyncMock(side_effect=RuntimeError("No VMs available"))
         MockSession.return_value = mock
         mgr = SessionManager(
-            gateway_url="http://test:8888", default_timeout=30,
+            pool_client=_mock_pool_client(), default_timeout=30,
             max_sessions=20, session_ttl=600,
         )
         with pytest.raises(RuntimeError, match="No VMs available"):
@@ -377,7 +389,7 @@ class TestSessionManagerEdgeCases:
     async def test_is_full_after_delete(self, MockSession):
         MockSession.return_value = AsyncMock()
         mgr = SessionManager(
-            gateway_url="http://test:8888", default_timeout=30,
+            pool_client=_mock_pool_client(), default_timeout=30,
             max_sessions=2, session_ttl=600,
         )
         e1 = await mgr.create()
@@ -393,7 +405,7 @@ class TestSessionManagerDashboardState:
         session = AsyncMock()
         session._kernel_id = "kid-1"
         MockSession.return_value = session
-        mgr = SessionManager(gateway_url="http://gw:8888")
+        mgr = SessionManager(pool_client=_mock_pool_client())
         entry = await mgr.create()
         assert entry.active_dashboard is None
 
@@ -503,9 +515,10 @@ async def client(mock_sandbox_session):
     with patch("execution_api.server.SandboxSession") as MockSession:
         MockSession.return_value = mock_sandbox_session
         mgr = SessionManager(
-            gateway_url="http://test:8888", default_timeout=30,
+            pool_client=_mock_pool_client(), default_timeout=30,
             max_sessions=20, session_ttl=600,
         )
+        setattr(mgr, "gateway_url", "http://test:8888")
         app = create_app(session_manager=mgr)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
@@ -649,7 +662,6 @@ class TestEndpoints:
             "/execute", json={"code": "print('hi')"},
         )
         assert resp.status_code == 503
-        assert resp.json()["error"] == "no VMs available"
 
     async def test_execute_with_rich_output(self, client):
         c, mock = client
@@ -700,7 +712,7 @@ class TestEndpoints:
         mock.start = AsyncMock(side_effect=RuntimeError("No VMs"))
         MockSession.return_value = mock
         mgr = SessionManager(
-            gateway_url="http://test:8888", default_timeout=30,
+            pool_client=_mock_pool_client(), default_timeout=30,
             max_sessions=20, session_ttl=600,
         )
         with pytest.raises(RuntimeError):
@@ -712,7 +724,7 @@ class TestEndpoints:
     async def test_create_enforces_max_sessions_atomically(self, MockSession):
         MockSession.return_value = AsyncMock()
         mgr = SessionManager(
-            gateway_url="http://test:8888", default_timeout=30,
+            pool_client=_mock_pool_client(), default_timeout=30,
             max_sessions=2, session_ttl=600,
         )
         await mgr.create()

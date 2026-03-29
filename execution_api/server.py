@@ -43,13 +43,10 @@ logger = logging.getLogger(__name__)
 
 # ── Configuration ────────────────────────────────────────────────────────
 
-GATEWAY_URL = os.environ.get("GATEWAY_URL", "http://localhost:8888")
-USE_PER_VM_KG = os.environ.get("USE_PER_VM_KG", "false").lower() == "true"
 POOL_MANAGER_URL = os.environ.get("POOL_MANAGER_URL", "http+unix:///var/run/fc-pool.sock")
-VM_GATEWAY_BASE = os.environ.get("VM_GATEWAY_BASE", "")
 SESSION_TTL = int(os.environ.get("SESSION_TTL", "600"))
 MAX_SESSIONS = int(os.environ.get("MAX_SESSIONS", "20"))
-DEFAULT_TIMEOUT = int(os.environ.get("DEFAULT_TIMEOUT", "30"))
+DEFAULT_TIMEOUT = int(os.environ.get("DEFAULT_TIMEOUT", "120"))
 ARTIFACT_BASE_DIR = os.environ.get("ARTIFACT_BASE_DIR")
 ARTIFACT_URL_PREFIX = os.environ.get("ARTIFACT_URL_PREFIX")
 SERVE_ARTIFACTS = os.environ.get("SERVE_ARTIFACTS", "true").lower() == "true"
@@ -95,24 +92,18 @@ class SessionManager:
 
     def __init__(
         self,
-        gateway_url: str = GATEWAY_URL,
+        pool_client: "PoolClient",
         default_timeout: int = DEFAULT_TIMEOUT,
         max_sessions: int = MAX_SESSIONS,
         session_ttl: int = SESSION_TTL,
-        pool_client: "PoolClient | None" = None,
     ):
-        self._gateway_url = gateway_url
+        self._pool_client = pool_client
         self._default_timeout = default_timeout
         self._max_sessions = max_sessions
         self._session_ttl = session_ttl
         self._sessions: dict[str, SessionEntry] = {}
         self._cleanup_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
-        self._pool_client = pool_client
-
-    @property
-    def gateway_url(self) -> str:
-        return self._gateway_url
 
     @property
     def default_timeout(self) -> int:
@@ -127,66 +118,18 @@ class SessionManager:
         return self._sessions
 
     async def create(self, execution_timeout: int | None = None) -> SessionEntry:
-        if self._pool_client is not None:
-            return await self._create_per_vm(execution_timeout)
-        return await self._create_central_kg(execution_timeout)
-
-    async def _create_central_kg(self, execution_timeout: int | None = None) -> SessionEntry:
-        async with self._lock:
-            if len(self._sessions) >= self._max_sessions:
-                raise RuntimeError("max sessions reached")
-
-            timeout = execution_timeout or self._default_timeout
-            session = SandboxSession(
-                gateway_url=self._gateway_url,
-                default_timeout=timeout,
-                artifact_store=_make_artifact_store(),
-            )
-
-            session_id = uuid.uuid4().hex
-            now = time.time()
-            entry = SessionEntry(
-                session=session,
-                session_id=session_id,
-                created_at=now,
-                last_active=now,
-                state=SessionState.CREATING,
-            )
-            self._sessions[session_id] = entry
-
-            try:
-                await session.start()
-            except Exception:
-                entry.state = SessionState.CLOSING
-                try:
-                    await session.stop()
-                except Exception:
-                    logger.debug("Failed to stop session during create cleanup", exc_info=True)
-                entry.state = SessionState.CLOSED
-                self._sessions.pop(session_id, None)
-                raise
-
-            entry.state = SessionState.ACTIVE
-            return entry
-
-    async def _create_per_vm(self, execution_timeout: int | None = None) -> SessionEntry:
-        assert self._pool_client is not None
         async with self._lock:
             if len(self._sessions) >= self._max_sessions:
                 raise RuntimeError("max sessions reached")
 
         vm = await self._pool_client.acquire()
-        vm_id = vm["vm_id"]
+        vm_id = vm.get("vm_id") or vm.get("id")
         vm_ip = vm["ip"]
-
-        if VM_GATEWAY_BASE:
-            gateway_url = f"{VM_GATEWAY_BASE}/vm/{vm_id}"
-        else:
-            gateway_url = f"http://{vm_ip}:8888"
+        kg_port = vm.get("kg_port", 8888)
 
         timeout = execution_timeout or self._default_timeout
         session = SandboxSession(
-            gateway_url=gateway_url,
+            gateway_url=f"http://{vm_ip}:{kg_port}",
             default_timeout=timeout,
             artifact_store=_make_artifact_store(),
             discover_kernel=True,
@@ -427,11 +370,8 @@ _cleanup_tasks: set[asyncio.Task] = set()
 
 def create_app(session_manager: SessionManager | None = None) -> FastAPI:
     if session_manager is None:
-        pool_client = None
-        if USE_PER_VM_KG:
-            from execution_api.pool_client import PoolClient
-            pool_client = PoolClient(POOL_MANAGER_URL)
-            logger.info("Per-VM KG mode enabled (pool: %s)", POOL_MANAGER_URL)
+        from execution_api.pool_client import PoolClient
+        pool_client = PoolClient(POOL_MANAGER_URL)
         session_manager = SessionManager(pool_client=pool_client)
 
     @asynccontextmanager
@@ -687,17 +627,29 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail="code is required")
 
         timeout = req_timeout or session_manager.default_timeout
+        try:
+            vm = await session_manager._pool_client.acquire()
+            vm_id = vm.get("vm_id") or vm.get("id")
+            vm_ip = vm["ip"]
+            kg_port = vm.get("kg_port", 8888)
+        except Exception as e:
+            logger.error("One-shot VM acquire failed: %s", e)
+            raise HTTPException(status_code=503, detail="no VMs available")
+
         session = SandboxSession(
-            gateway_url=session_manager.gateway_url,
+            gateway_url=f"http://{vm_ip}:{kg_port}",
             default_timeout=timeout,
             artifact_store=_make_artifact_store(),
+            skip_kernel_delete=True,
         )
         try:
             await session.start()
-        except RuntimeError:
-            raise HTTPException(status_code=503, detail="no VMs available")
         except Exception as e:
             logger.error("One-shot session creation failed: %s", e)
+            try:
+                await session_manager._pool_client.destroy(vm_id)
+            except Exception:
+                pass
             raise HTTPException(status_code=503, detail="session creation failed")
 
         try:
@@ -716,22 +668,27 @@ def create_app(session_manager: SessionManager | None = None) -> FastAPI:
                     await _upload_file_to_vm(session, content, f"/data/{filename}")
             result = await session.execute(req_code)
         except Exception:
-            _schedule_cleanup(session)
+            _schedule_cleanup(session, vm_id)
             raise
-        _schedule_cleanup(session)
+        _schedule_cleanup(session, vm_id)
         return _result_to_response(result)
 
-    def _schedule_cleanup(session: SandboxSession) -> None:
-        task = asyncio.create_task(_safe_stop(session))
+    def _schedule_cleanup(session: SandboxSession, vm_id: str | None = None) -> None:
+        task = asyncio.create_task(_safe_stop(session, vm_id))
         _cleanup_tasks.add(task)
         task.add_done_callback(_cleanup_tasks.discard)
 
-    async def _safe_stop(session: SandboxSession) -> None:
+    async def _safe_stop(session: SandboxSession, vm_id: str | None = None) -> None:
         async with _cleanup_semaphore:
             try:
                 await session.stop()
             except Exception:
-                logger.debug("Background session cleanup failed", exc_info=True)
+                pass
+            if vm_id:
+                try:
+                    await session_manager._pool_client.destroy(vm_id)
+                except Exception:
+                    pass
 
     @app.post("/sessions/{session_id}/dashboard", response_model=DashboardResponse)
     async def launch_dashboard(session_id: str, req: DashboardRequest):
